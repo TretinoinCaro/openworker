@@ -51,11 +51,17 @@ from typing import Any, Callable, Optional
 
 from .reviewer import APPROVAL_CONTEXT_MAX_CHARS, Verdict
 
-# Jev reads at most 32k tokens of state. With no tokenizer for it, chars/4 is the usual
-# rough estimate, and the margin is wide rather than discovering the limit as a 4xx.
+# TypeSafe's documented limits (docs.typesafe.ai/models.md): 32k tokens for the state plus any
+# ONE question, and 64k for the state plus all questions in a request; over either is a 400
+# `max_tokens_exceeded`. The per-question limit binds first: our largest Jev question is about
+# 950 characters (~320 tokens) and all of them together about 13k characters. There is no
+# tokenizer for Jev; measured Jev traffic averaged about 3.3 characters per token (2026-10-18),
+# and dense JSON or non-English text runs lower, so the estimate is 3. The 2,000-token margin
+# covers the largest question and the request's own JSON. Oversized states fail closed to a
+# card before any call (review(), below) instead of surfacing as a vendor error.
 JEV_STATE_TOKEN_LIMIT = 32_000
-_CHARS_PER_TOKEN_ESTIMATE = 4
-_STATE_CHAR_BUDGET = (JEV_STATE_TOKEN_LIMIT - 2_000) * _CHARS_PER_TOKEN_ESTIMATE
+_CHARS_PER_TOKEN_ESTIMATE = 3
+_STATE_CHAR_BUDGET = (JEV_STATE_TOKEN_LIMIT - 2_000) * _CHARS_PER_TOKEN_ESTIMATE  # 90,000 characters
 
 # The values the Auto-Approve "reviewer" setting can take. "session" is the session's own
 # model (coworker.reviewer.Reviewer), the default.

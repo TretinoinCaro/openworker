@@ -214,6 +214,30 @@ def test_jev_missing_part_fails_closed():
         assert {cond, *nots} <= {q.name for q in JEV_QUESTIONS}
 
 
+def test_state_budget_fits_jevs_per_question_limit():
+    # TypeSafe: 32k tokens for the state plus any one question. At a conservative 3 characters
+    # per token, the largest state we send plus the largest Jev question must stay under it.
+    from coworker.decision_reviewer import JEV_STATE_TOKEN_LIMIT, _STATE_CHAR_BUDGET
+
+    rec = _Recorder(_answers({}))
+    _, _, body = JEV(api_key="k", transport=rec).build_questions_request({}, JEV_QUESTIONS)
+    largest_question = max(len(json.dumps(q, ensure_ascii=False)) for q in body["questions"].values())
+    assert (_STATE_CHAR_BUDGET + largest_question) / 3 <= JEV_STATE_TOKEN_LIMIT
+    assert _STATE_CHAR_BUDGET == 90_000
+
+
+@pytest.mark.parametrize("backend", [DECISIONS, JEV])
+def test_oversized_state_fails_closed_without_a_vendor_call(backend):
+    from coworker.decision_reviewer import _STATE_CHAR_BUDGET
+
+    rv, rec = _rv(backend)
+    # Under the 64k approval-context cap, but the action's own arguments push the state over.
+    v = _review(rv, tool_name="write_file",
+                arguments={"path": "big.txt", "content": "x" * (_STATE_CHAR_BUDGET + 1)})
+    assert v.verdict == "unsure" and v.error
+    assert rec.bodies == []
+
+
 def test_jev_examples_are_not_eval_rows():
     from scripts import eval_reviewer as ev
 
