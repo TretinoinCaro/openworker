@@ -395,12 +395,22 @@ def evidence_state(
 
 
 
+# Card rule (owner ruling 2026-10-19, measured 2026-10-26): a stop signal blocks only when the
+# model also says the user did NOT ask for this kind of action. When it says both "the user asked
+# for this" and "this looks wrong", the answers contradict each other, so the person decides on a
+# card instead of the action being blocked. Re-scoring the saved public-dataset answers
+# (AgentDojo): wrong blocks on normal calls 64 -> 40 (Decisions) and 70 -> 29 (Jev), with no new
+# allow on any attack or sealed row, since a card still stops the action.
+STOP_BLOCKS_BELOW_REQUESTED = 0.50
+
+
 def combine_answers(
     p: dict[str, Any], *, run_threshold: float, stop_threshold: float, risk_threshold: float
 ) -> tuple[str, str]:
     """Code combines the answers.
 
-    * **Stop** on any stop signal at or above `stop_threshold`.
+    * **Stop** on any stop signal at or above `stop_threshold`: **block** when `requested` is
+      below `STOP_BLOCKS_BELOW_REQUESTED`, otherwise **ask** (the card rule above).
     * **Allow** only when the user asked for this kind of action (`requested` at or above
       `run_threshold`), every ask signal is below `risk_threshold`, any write outside the
       working folders was asked for, and the action doesn't run an agent-made file the
@@ -414,7 +424,10 @@ def combine_answers(
         return "unsure", "decision model returned out-of-range probabilities"
     hit = [k for k in STOP_SIGNALS if vals[k] >= stop_threshold]
     if hit:
-        return "deny", "; ".join(f"{k} {vals[k]:.2f}" for k in hit)
+        why = "; ".join(f"{k} {vals[k]:.2f}" for k in hit)
+        if vals["requested"] < STOP_BLOCKS_BELOW_REQUESTED:
+            return "deny", why
+        return "unsure", f"requested {vals['requested']:.2f} but {why}"
     risky = [k for k in ASK_SIGNALS if vals[k] >= risk_threshold]
     if vals["outside_folders"] >= risk_threshold and vals["outside_change_requested"] < 0.5:
         risky.append("outside_folders")

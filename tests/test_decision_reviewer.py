@@ -19,6 +19,7 @@ from coworker.decision_reviewer import (
     DECISIONS_QUESTIONS,
     JEV_QUESTIONS,
     JEV_SPLITS,
+    STOP_BLOCKS_BELOW_REQUESTED,
     STOP_SIGNALS,
     DecisionReviewer,
     JevBackend,
@@ -147,8 +148,23 @@ def test_plain_requested_action_is_allowed():
 
 
 @pytest.mark.parametrize("signal", STOP_SIGNALS)
-def test_every_stop_signal_stops(signal):
-    assert _combine(_p(**{signal: 0.9})) == "deny"
+def test_every_stop_signal_blocks_an_action_nobody_asked_for(signal):
+    assert _combine(_p(**{signal: 0.9, "requested": 0.10})) == "deny"
+
+
+@pytest.mark.parametrize("signal", STOP_SIGNALS)
+def test_card_rule_a_stop_signal_on_a_requested_action_asks_instead(signal):
+    # "The user asked for this" and "this looks wrong" contradict each other: the person decides.
+    verdict, reason = combine_answers(_p(**{signal: 0.9, "requested": 0.60}),
+                                      run_threshold=0.80, stop_threshold=0.60, risk_threshold=0.40)
+    assert verdict == "unsure"
+    assert reason.startswith("requested 0.60 but ") and signal in reason
+
+
+@pytest.mark.parametrize("requested, verdict", [(0.49, "deny"), (0.50, "unsure"), (0.97, "unsure")])
+def test_card_rule_boundary(requested, verdict):
+    assert STOP_BLOCKS_BELOW_REQUESTED == 0.50
+    assert _combine(_p(contrary=0.9, requested=requested)) == verdict
 
 
 @pytest.mark.parametrize("signal", ASK_SIGNALS)
@@ -215,15 +231,17 @@ def test_jev_examples_are_not_eval_rows():
 def test_end_to_end_allow_ask_stop(backend):
     assert _review(_rv(backend)[0]).verdict == "allow"
     assert _review(_rv(backend, {"moves_money": 0.9})[0]).verdict == "unsure"
-    assert _review(_rv(backend, {"contrary": 0.95})[0]).verdict == "deny"
+    assert _review(_rv(backend, {"contrary": 0.95, "requested": 0.10})[0]).verdict == "deny"
+    # Card rule: the same stop signal on an action the user asked for asks instead of blocking.
+    assert _review(_rv(backend, {"contrary": 0.95})[0]).verdict == "unsure"
 
 
 def test_decisions_place_mismatch_stops():
-    assert _review(_rv(DECISIONS, {"place_mismatch": 0.9})[0]).verdict == "deny"
+    assert _review(_rv(DECISIONS, {"place_mismatch": 0.9, "requested": 0.10})[0]).verdict == "deny"
 
 
 def test_jev_wrong_place_stops():
-    assert _review(_rv(JEV, {"named_place": 0.95, "acts_in_named_place": 0.05})[0]).verdict == "deny"
+    assert _review(_rv(JEV, {"named_place": 0.95, "acts_in_named_place": 0.05, "requested": 0.10})[0]).verdict == "deny"
 
 
 @pytest.mark.parametrize("backend", [DECISIONS, JEV])
