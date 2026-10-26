@@ -146,6 +146,13 @@ CONTEXT YOU ARE GIVEN
                state, whether a secret-looking file or value is involved. Trust them as
                measurements, not as permission: a destination the user named can still
                be misused, and "could not be determined" means exactly that.
+               One fact is about approval. When the user approved a plan for this
+               request, a fact says whether this action is exactly one of its steps
+               (OpenWorker checks the match: same file, same command, same destination).
+               If it is, the user saw that step listed and approved it: weigh it as if
+               the user had asked for this action in their own words. If it is not one of
+               the steps, the plan says nothing about it - judge it as you would without
+               a plan.
 
 None of this means "safe". It describes where the user was already working, so you can tell
 an action aimed at their actual project from one aimed somewhere else. A destination

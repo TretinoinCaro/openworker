@@ -35,6 +35,13 @@ export type EventType =
   | "sandbox_preparing"
   | "sandbox_ready";
 
+export interface PlanStepView {
+  kind: string;
+  target: string;
+  destination?: string;
+  risky: boolean;
+}
+
 export interface WsEvent {
   type: EventType;
   data: any;
@@ -236,6 +243,10 @@ export type Item =
   | {
       kind: "planreq";
       plan: string;
+      // OPE-237: a plan proposed in auto-approve lists its steps; the card shows them,
+      // marks the risky ones, and offers approve-all or send-back (no mode choice).
+      steps?: PlanStepView[];
+      autoApprove?: boolean;
       resolved?: "approved" | "rejected";
     }
   | {

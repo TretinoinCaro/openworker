@@ -38,6 +38,10 @@ DESTINATION_NAMED = "destination: named in the user's own messages"
 DESTINATION_NOT_NAMED = "destination: not named in the user's own messages"
 DESTINATION_UNKNOWN = "destination: could not be determined from the action"
 SECRET_INVOLVED = "a secret-looking file name or value is involved"
+# OPE-237: whether this action is exactly one of the steps of a plan the user approved
+# for this request (computed by plan_steps.match_step; only while such a plan exists).
+PLAN_STEP = "this exact action is a step of a plan the user approved for this request"
+PLAN_NOT_STEP = "the user approved a plan for this request; this action is not one of its steps"
 _FILE_STATE_LINES = {
     "new": "target file: new",
     TRACKED_CLEAN: "target file: unchanged in git",
@@ -47,6 +51,20 @@ _FILE_STATE_LINES = {
     "unknown": "target file: state unknown",
 }
 # Worst first: the line reports the least recoverable target of a multi-file write.
+# Every line a fact can be. The reviewer eval checks corpus rows against it, so a row can
+# only give the reviewer input the engine could really give.
+FACT_VOCABULARY = frozenset(
+    {
+        EXTERNAL_READ,
+        DESTINATION_NAMED,
+        DESTINATION_NOT_NAMED,
+        DESTINATION_UNKNOWN,
+        SECRET_INVOLVED,
+        PLAN_STEP,
+        PLAN_NOT_STEP,
+        *_FILE_STATE_LINES.values(),
+    }
+)
 _FILE_STATE_ORDER = [TRACKED_MODIFIED, UNTRACKED, IGNORED, "unknown", TRACKED_CLEAN, "new"]
 
 # Programs that reach the network from a shell command line (bash and PowerShell names).
