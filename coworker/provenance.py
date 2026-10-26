@@ -255,6 +255,12 @@ class SessionFiles:
         origin = self._files.get(resolve(str(path), self.root))
         return origin is not None and origin.kind == WRITTEN
 
+    def downloaded(self, path: Path | str) -> bool:
+        """True when this file's current bytes came from a download this session (OPE-235:
+        reading it brings outside content into the agent's context)."""
+        origin = self._files.get(resolve(str(path), self.root))
+        return origin is not None and origin.kind == DOWNLOADED
+
     @staticmethod
     def _is_device(path: str) -> bool:
         try:

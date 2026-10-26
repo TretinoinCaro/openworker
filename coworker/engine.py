@@ -25,6 +25,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from . import compaction as _compaction
 from . import provenance
+from . import review_facts
 from . import session_facts
 from . import toolchain as _toolchain
 from . import toolresult
@@ -306,6 +307,9 @@ class TurnEngine:
         # the agent's own bytes are lost. An injected lookup (tests) is left alone.
         if getattr(permissions, "agent_wrote", None) is None:
             permissions.agent_wrote = self._agent_files.wrote
+        # OPE-235: whether outside content (web, email, connectors, downloads) has entered
+        # the agent's context this session; one of the reviewer's computed facts.
+        self._external_read = False
         self._tool_result_max_bytes = (
             toolresult.DEFAULT_TOOL_RESULT_MAX_BYTES
             if tool_result_max_bytes is None
@@ -1374,6 +1378,34 @@ class TurnEngine:
         cwd = getattr(executor, "cwd", None) if executor is not None else None
         return str(cwd) if cwd else None
 
+    def _facts_kw(
+        self, tool_call: ToolCall, request: str, history: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """OPE-235: what code can check about this call, as `{"facts": [...]}` for the
+        reviewer, or {} when there is nothing to say (so reviewers that predate facts keep
+        working). Fixed vocabulary (review_facts.py); a failure here never blocks a review."""
+        try:
+            from .permissions import write_paths
+            from .risk import WRITE_TOOLS
+
+            targets: list[Path] = []
+            if tool_call.name in WRITE_TOOLS:
+                paths, _located = write_paths(tool_call.name, tool_call.arguments or {})
+                targets = [self.permissions._candidate(p) for p in paths]
+            spec = self.registry.get(tool_call.name)
+            facts = review_facts.compute_facts(
+                tool_call.name,
+                tool_call.arguments or {},
+                user_texts=[request, *(str(h.get("text", "")) for h in history)],
+                external_read=self._external_read,
+                write_targets=targets,
+                metadata=spec.metadata if spec else None,
+                egress_host=self.permissions.egress_host,
+            )
+        except Exception:  # noqa: BLE001 - facts inform the reviewer, never gate it
+            return {}
+        return {"facts": facts} if facts else {}
+
     async def _preconsult_reviewer(self, tool_calls: list[ToolCall]) -> None:
         """Fire one reviewer request per call that will escalate, all concurrently, and
         park the verdicts for `_authorize` to consume. One action per request — there is
@@ -1418,6 +1450,7 @@ class TurnEngine:
                     arguments=tc.arguments,
                     provenance=self._provenance(tc),
                     **({"action_context": context} if context else {}),
+                    **self._facts_kw(tc, request, history),
                 )
                 for tc in pending
             ]
@@ -1462,6 +1495,7 @@ class TurnEngine:
             arguments=tool_call.arguments,
             provenance=self._provenance(tool_call),
             **({"action_context": context} if context else {}),
+            **self._facts_kw(tool_call, request, history),
         )
         if (request, history, context) != self._review_inputs():
             from .reviewer import Verdict
@@ -1545,6 +1579,7 @@ class TurnEngine:
                     tool_name=tool_call.name,
                     arguments=tool_call.arguments,
                     **({"action_context": context} if context else {}),
+                    **self._facts_kw(tool_call, request, history),
                 )
                 self._audit(
                     tool_call,
@@ -2058,6 +2093,21 @@ class TurnEngine:
             self._yield_for_wake = True
         self._step += 1
         if status == "ok":
+            # OPE-235: once outside content has entered the agent's context, every later
+            # review says so. Checked before recording, so reading a file downloaded in
+            # an EARLIER call counts, not the download call itself twice.
+            if not self._external_read and (
+                review_facts.is_external_read(
+                    tool_call.name, tool_call.arguments, spec.metadata if spec else None
+                )
+                or (
+                    tool_call.name == "read_file"
+                    and self._agent_files.downloaded(
+                        str((tool_call.arguments or {}).get("path", ""))
+                    )
+                )
+            ):
+                self._external_read = True
             # Only successful calls: a write that raised left nothing on disk to run.
             self._agent_files.record(
                 tool_call.name, tool_call.arguments, result, step=self._step
