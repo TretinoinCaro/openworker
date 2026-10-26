@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { Transcript } from "./Transcript";
-import { exitCodeOf } from "./UnaskedSummary";
+import { exitCodeOf, patchSummary } from "./UnaskedSummary";
 import type { Item } from "../types";
 
 afterEach(cleanup);
@@ -217,6 +217,69 @@ describe("changes made without asking (OPE-238)", () => {
     expect(heads.length).toBe(2);
     expect(heads[0]).toContain("3 changes");
     expect(heads[1]).toContain("1 change made");
+  });
+});
+
+// A patch names its files in its headers. The summary says what happened to each one,
+// instead of "Edited files" (seen live: a patch that only deleted old-notes.txt read as
+// "Edited files", 26 Oct 2026).
+describe("patch rows name their files", () => {
+  const patchTurn = (name: string, args: any): Item[] => [
+    { kind: "user", text: "tidy up" },
+    { kind: "tool", id: "t1", callId: "c1", name, args, status: "ok", approvalOrigin: "reviewer" },
+    { kind: "assistant", text: "Done." },
+  ];
+  const rowText = (items: Item[]) => {
+    render(<Transcript items={items} onApprove={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("unasked-summary-head"));
+    return within(screen.getByTestId("unasked-group-files")).getByTestId("unasked-item-line").textContent;
+  };
+
+  it("a patch that only deletes a file says Deleted <file>", () => {
+    const patch = "*** Begin Patch\n*** Delete File: old-notes.txt\n*** End Patch";
+    const text = rowText(patchTurn("apply_patch", { patch }));
+    expect(text).toBe("Deleted old-notes.txt");
+    expect(text).not.toContain("Edited files");
+  });
+
+  it("a patch touching several files names each with what happened to it", () => {
+    const patch =
+      "*** Begin Patch\n*** Add File: summary.txt\n+done\n*** Update File: notes.md\n@@\n-a\n+b\n" +
+      "*** Delete File: old-notes.txt\n*** Update File: draft.md\n*** Move to: final.md\n@@\n-x\n+y\n*** End Patch";
+    expect(rowText(patchTurn("apply_patch", { patch }))).toBe(
+      "Created summary.txt · Edited notes.md · Deleted old-notes.txt · Moved draft.md to final.md",
+    );
+  });
+
+  it("a unified diff that removes a file says Deleted <file>", () => {
+    const diff = "--- a/old-notes.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n";
+    expect(rowText(patchTurn("apply_unified_diff", { diff }))).toBe("Deleted old-notes.txt");
+  });
+
+  it("a unified diff that creates or edits files names them", () => {
+    const diff =
+      "--- /dev/null\n+++ b/summary.txt\n@@ -0,0 +1 @@\n+done\n" +
+      "--- a/notes.md\n+++ b/notes.md\n@@ -1 +1 @@\n-a\n+b\n";
+    expect(rowText(patchTurn("apply_unified_diff", { diff }))).toBe("Created summary.txt · Edited notes.md");
+  });
+
+  it("a write to one file still shows its path, as before", () => {
+    const text = rowText(patchTurn("write_file", { path: "docs/summary.md", content: "x" }));
+    expect(text).toBe("Wrote docs/summary.md");
+  });
+});
+
+describe("patchSummary", () => {
+  it("reads Codex-style patch headers", () => {
+    expect(patchSummary("apply_patch", { patch: "*** Begin Patch\n*** Delete File: a.txt\n*** End Patch" })).toEqual([
+      { verb: "deleted", path: "a.txt" },
+    ]);
+  });
+
+  it("returns nothing for a patch with no headers it understands", () => {
+    expect(patchSummary("apply_patch", { patch: "garbage" })).toEqual([]);
+    expect(patchSummary("apply_patch", {})).toEqual([]);
+    expect(patchSummary("write_file", { path: "a.txt" })).toEqual([]);
   });
 });
 

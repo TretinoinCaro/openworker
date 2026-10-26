@@ -293,7 +293,12 @@
       "group_other": "其他操作",
       "exit": "退出码 {{code}}",
       "audit": "审计日志",
-      "more_lines": "… 还有 {{count}} 行"
+      "more_lines": "… 还有 {{count}} 行",
+      "created": "新建",
+      "edited": "编辑",
+      "deleted": "删除",
+      "moved": "移动",
+      "moved_to": "至"
     }
   },
   "rail": {

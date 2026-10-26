@@ -298,7 +298,12 @@
       "exit": "exit {{code}}",
       "audit": "audit log",
       "more_lines": "… {{count}} more lines",
-      "more_lines_one": "… {{count}} more line"
+      "more_lines_one": "… {{count}} more line",
+      "created": "Created",
+      "edited": "Edited",
+      "deleted": "Deleted",
+      "moved": "Moved",
+      "moved_to": "to"
     }
   },
   "rail": {

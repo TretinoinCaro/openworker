@@ -94,6 +94,46 @@ function Diff({ tool }: { tool: ToolItem }) {
   );
 }
 
+export type PatchChange = { verb: "created" | "edited" | "deleted" | "moved"; path: string; to?: string };
+
+// What a patch does to each file, from its headers, so the summary names the files instead
+// of "Edited files". Codex-style patches (`*** Add/Update/Delete File:`, `*** Move to:`) and
+// unified diffs (`--- a/x` / `+++ b/x`, with /dev/null for a created or deleted file).
+export function patchSummary(name: string, args: any): PatchChange[] {
+  const a = args && typeof args === "object" ? args : {};
+  const changes: PatchChange[] = [];
+  if (name === "apply_patch") {
+    for (const raw of lines(a.patch)) {
+      const m = /^\*\*\* (Add|Update|Delete) File: (.+)$/.exec(raw.trim());
+      if (m) {
+        const verb = m[1] === "Add" ? "created" : m[1] === "Delete" ? "deleted" : "edited";
+        changes.push({ verb, path: m[2].trim() });
+        continue;
+      }
+      const move = /^\*\*\* Move to: (.+)$/.exec(raw.trim());
+      const last = changes[changes.length - 1];
+      if (move && last && last.verb === "edited") {
+        last.verb = "moved";
+        last.to = move[1].trim();
+      }
+    }
+  } else if (name === "apply_unified_diff") {
+    const strip = (p: string) => p.trim().replace(/^[ab]\//, "");
+    let from = "";
+    for (const raw of lines(a.diff)) {
+      if (raw.startsWith("--- ")) from = raw.slice(4).trim();
+      else if (raw.startsWith("+++ ")) {
+        const to = raw.slice(4).trim();
+        if (to === "/dev/null") changes.push({ verb: "deleted", path: strip(from) });
+        else if (from === "/dev/null") changes.push({ verb: "created", path: strip(to) });
+        else changes.push({ verb: "edited", path: strip(to) });
+        from = "";
+      }
+    }
+  }
+  return changes.filter((c) => c.path);
+}
+
 function UnaskedItem({ tool, onOpenAudit }: { tool: ToolItem; onOpenAudit?: (callId: string) => void }) {
   const { t } = useTranslation();
   const line = humanizeTool(tool.name, tool.args);
@@ -101,13 +141,28 @@ function UnaskedItem({ tool, onOpenAudit }: { tool: ToolItem; onOpenAudit?: (cal
   const isCommand = COMMAND_TOOLS.has(tool.name);
   const exit = isCommand ? exitCodeOf(tool.preview) : null;
   const failed = tool.status !== "ok";
+  const patched = patchSummary(tool.name, tool.args);
   return (
     <div data-testid="unasked-item" className="py-0.5">
       <div className="flex items-baseline gap-2 px-2">
         <span className={"w-3.5 text-center text-label shrink-0 " + (failed || (exit !== null && exit !== 0) ? "text-danger" : "text-ok")}>●</span>
-        <span className="min-w-0 text-ui leading-relaxed">
+        <span className="min-w-0 text-ui leading-relaxed" data-testid="unasked-item-line">
           {isCommand ? (
             <code className="font-mono text-meta text-ink break-all">{String(tool.args?.command ?? "")}</code>
+          ) : patched.length ? (
+            patched.map((change, i) => (
+              <span key={i}>
+                {i > 0 && <span className="text-faint"> · </span>}
+                <span className="text-muted">{t(`transcript.unasked.${change.verb}`)} </span>
+                <span className="font-mono text-meta text-ink break-all">{change.path}</span>
+                {change.to && (
+                  <>
+                    <span className="text-muted"> {t("transcript.unasked.moved_to")} </span>
+                    <span className="font-mono text-meta text-ink break-all">{change.to}</span>
+                  </>
+                )}
+              </span>
+            ))
           ) : path ? (
             <>
               <span className="text-muted">{line.pre}</span>
