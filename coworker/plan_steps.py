@@ -11,9 +11,11 @@ Only an exact match counts:
 * ``send``   - that file going to exactly that host (a network command or a web tool
   whose every URL is that host), or a connector action to exactly that recipient.
 
-The reviewer then gets one fixed line saying whether the action is a step
-(``review_facts.PLAN_STEP`` / ``PLAN_NOT_STEP``). It never sees the plan's text: the
-steps are written by the agent, and a step can only ever vouch for itself.
+When the action is exactly a step, the reviewer gets one fixed line
+(``review_facts.PLAN_STEP``). Any other action gets no plan line at all, so a plan can
+only add evidence for its own steps and never makes anything else harder. The reviewer
+never sees the plan's text: the steps are written by the agent, and a step can only ever
+vouch for itself.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ import re
 import shlex
 import sys
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
@@ -40,6 +43,19 @@ _SHELL_META = re.compile(r"[;&|`$<>(){}*?\[\]\n\r]")
 _DELETE_COMMANDS = {"rm", "del", "erase", "remove-item", "ri"}
 _DELETE_FLAGS = {"-f", "--force", "-force", "-path", "-literalpath", "/q", "/f"}
 _LOOKS_LIKE_FILE = re.compile(r"^[\w.-]+\.[A-Za-z0-9]{1,8}$")
+# "httpbin.org/post", "httpbin.org:443": a host with a path or a port, no scheme.
+_HOST_WITH_TAIL = re.compile(r"^([a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+)(?::\d+)?(?:[/?#].*)?$")
+
+
+def _destination(raw: str) -> str:
+    """A send step's destination as it is checked: a URL or host with a path or port
+    becomes the bare host (agents write "https://httpbin.org/post"); a connector
+    recipient ("slack:T1/C9", an email address) keeps its shape. Lower case."""
+    text = raw.strip().lower()
+    if "://" in text:
+        return (urlsplit(text).hostname or "").strip(".")
+    match = _HOST_WITH_TAIL.match(text)
+    return match.group(1) if match else text
 
 
 @dataclass(frozen=True)
@@ -66,7 +82,7 @@ def normalize_steps(raw: Any) -> tuple[list[PlanStep], int]:
             continue
         kind = str(entry.get("kind") or "").strip().lower()
         target = str(entry.get("target") or "").strip()
-        destination = str(entry.get("destination") or "").strip().lower() if kind == "send" else ""
+        destination = _destination(str(entry.get("destination") or "")) if kind == "send" else ""
         if (
             kind not in KINDS
             or not target

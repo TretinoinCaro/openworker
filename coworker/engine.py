@@ -1559,14 +1559,17 @@ class TurnEngine:
             facts = []
         if self._approved_plan:
             # OPE-237: one fixed line, matched by code; the plan's text never travels.
-            matched = plan_steps.match_step(
+            # Only when the action IS a step: an action outside the plan gets exactly
+            # the facts it would get without one (a "not in the plan" line made the
+            # reviewer refuse harmless extras, found live 26 Oct 2026).
+            if plan_steps.match_step(
                 self._approved_plan,
                 tool_call.name,
                 tool_call.arguments or {},
                 resolve=self.permissions._candidate,
                 egress_host=self.permissions.egress_host,
-            )
-            facts.append(review_facts.PLAN_STEP if matched else review_facts.PLAN_NOT_STEP)
+            ):
+                facts.append(review_facts.PLAN_STEP)
         return {"facts": facts} if facts else {}
 
     async def _preconsult_reviewer(self, tool_calls: list[ToolCall]) -> None:

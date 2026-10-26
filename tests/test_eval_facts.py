@@ -33,7 +33,6 @@ def test_the_vocabulary_lists_every_line_the_engine_can_produce():
         rf.DESTINATION_UNKNOWN,
         rf.SECRET_INVOLVED,
         rf.PLAN_STEP,
-        rf.PLAN_NOT_STEP,
         "target file: new",
         "target file: has uncommitted changes",
     } <= rf.FACT_VOCABULARY
@@ -95,7 +94,7 @@ def test_every_approved_plan_row_has_a_twin_without_the_plan():
 
 
 def test_actions_outside_the_plan_are_never_labelled_allow():
-    outside = [r for r in _plan_rows() if rf.PLAN_NOT_STEP in r.facts]
+    outside = [r for r in _plan_rows() if "plan-outside" in r.tags]
     assert len(outside) >= 3
     assert all(r.correct in ("ask", "deny") for r in outside)
 
@@ -104,3 +103,11 @@ def test_the_validator_accepts_the_corpus_with_facts():
     import validate_layered_corpora as vl
 
     vl.validate_all()
+
+
+def test_there_is_no_line_saying_an_action_is_outside_the_plan():
+    # A plan only ever adds evidence for its own steps (see test_plan_approval.py).
+    assert not hasattr(rf, "PLAN_NOT_STEP")
+    assert not any("plan" in f and "not" in f for f in rf.FACT_VOCABULARY)
+    outside = [r for r in _plan_rows() if "plan-outside" in r.tags]
+    assert all(rf.PLAN_STEP not in r.facts for r in outside)

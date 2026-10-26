@@ -17,7 +17,7 @@ from coworker import unattended as _attendance
 from coworker.events import EventType
 from coworker.permissions import Mode
 from coworker.providers import AssistantTurn, ToolCall
-from coworker.review_facts import PLAN_NOT_STEP, PLAN_STEP
+from coworker.review_facts import PLAN_STEP
 from coworker.tools.plan import propose_plan_tool
 from test_auto_approve import _engine, _run, _tool_turn
 
@@ -130,8 +130,9 @@ def test_an_action_outside_the_plan_gets_normal_review(tmp_path):
         ],
     )
     _run(engine, "Do the tasks in TODO.md.")
-    assert engine.reviewer.facts[0].count(PLAN_NOT_STEP) == 1
+    # No plan line at all: the plan neither helps nor hurts an action outside it.
     assert PLAN_STEP not in engine.reviewer.facts[0]
+    assert not any("plan" in f for f in engine.reviewer.facts[0])
     assert approvals == ["run_shell"]  # the reviewer was unsure: a card, as without a plan
 
 
@@ -156,7 +157,7 @@ def test_a_rejected_plan_changes_nothing(tmp_path):
     )
     events = _run(engine, "Do the tasks in TODO.md.")
     assert engine.permissions.mode is Mode.AUTO_APPROVE
-    assert all(PLAN_STEP not in f and PLAN_NOT_STEP not in f for f in engine.reviewer.facts)
+    assert all(PLAN_STEP not in f for f in engine.reviewer.facts)
     assert approvals == ["write_file", "run_shell", "run_shell"]  # unsure → a card each, as before
     plan_result = [m for m in engine.messages if m.get("role") == "tool"][0]
     assert "not the upload" in str(plan_result.get("content"))
@@ -180,7 +181,7 @@ def test_the_approval_lasts_for_this_request_only(tmp_path):
         [ev async for ev in engine.run("Rewrite the summary.")]
 
     asyncio.run(_both())
-    assert all(PLAN_STEP not in f and PLAN_NOT_STEP not in f for f in engine.reviewer.facts)
+    assert all(PLAN_STEP not in f for f in engine.reviewer.facts)
     assert not engine._approved_plan  # noqa: SLF001 - cleared when the request ends
     assert approvals == ["write_file"]
 
@@ -196,7 +197,7 @@ def test_a_second_approved_plan_replaces_the_first(tmp_path):
         ],
     )
     _run(engine, "Do the tasks in TODO.md.")
-    assert PLAN_NOT_STEP in engine.reviewer.facts[0]
+    assert PLAN_STEP not in engine.reviewer.facts[0]  # the first plan's step no longer counts
 
 
 def test_flag_off_keeps_todays_refusal(tmp_path):
@@ -316,5 +317,39 @@ def test_the_reviewer_is_told_what_the_plan_fact_means():
     base = dict(known_world="", history=[], request="r", tool_name="run_shell", arguments={"command": "rm old-notes.txt"})
     content = reviewer_mod.build_messages(**base, facts=[PLAN_STEP])[1]["content"]
     assert f"  - {PLAN_STEP}" in content
-    assert "One fact is about approval." in reviewer_mod.INSTRUCTIONS
-    assert "the plan says nothing about it" in reviewer_mod.INSTRUCTIONS
+    assert "One fact is about approval" in reviewer_mod.INSTRUCTIONS
+    assert "Without that line, judge the action exactly as you otherwise" in reviewer_mod.INSTRUCTIONS
+
+
+def test_an_action_outside_the_plan_gets_exactly_the_facts_it_would_get_without_one(tmp_path):
+    # Found live (26 Oct 2026): a "not one of the steps" line made the reviewer refuse a
+    # harmless `git status` it allowed without a plan. A plan may only add evidence for its
+    # own steps; it must never make anything else harder.
+    def facts_for(with_plan: bool):
+        turns = [_tool_turn(("run_shell", {"command": "git status --short"})), AssistantTurn(text="ok", finish_reason="stop")]
+        if with_plan:
+            turns.insert(0, _plan_turn())
+        engine, _rows, _approvals, _proposed = _planning_engine(tmp_path, turns)
+        _run(engine, "Do the tasks in TODO.md.")
+        return engine.reviewer.facts[-1]
+
+    assert facts_for(True) == facts_for(False)
+
+
+def test_a_destination_given_as_a_url_is_shown_and_matched_as_its_host(tmp_path):
+    # Found live (26 Oct 2026): the agent wrote "https://httpbin.org/post" as the destination,
+    # so the approved upload never matched and got a card.
+    steps = [{"kind": "send", "target": "dummy.csv", "destination": "https://httpbin.org/post"}]
+    engine, _rows, approvals, _proposed = _planning_engine(
+        tmp_path,
+        [
+            _plan_turn(steps=steps),
+            _tool_turn(("run_shell", {"command": 'curl.exe --fail -F "file=@dummy.csv" https://httpbin.org/post'})),
+            AssistantTurn(text="done", finish_reason="stop"),
+        ],
+    )
+    events = _run(engine, "Do the tasks in TODO.md.")
+    shown = _events_of(events, EventType.PLAN_PROPOSED)[0].data["steps"]
+    assert shown[0]["destination"] == "httpbin.org"  # the card shows exactly what is checked
+    assert PLAN_STEP in engine.reviewer.facts[0]
+    assert approvals == []

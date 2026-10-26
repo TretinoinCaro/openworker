@@ -38,10 +38,10 @@ DESTINATION_NAMED = "destination: named in the user's own messages"
 DESTINATION_NOT_NAMED = "destination: not named in the user's own messages"
 DESTINATION_UNKNOWN = "destination: could not be determined from the action"
 SECRET_INVOLVED = "a secret-looking file name or value is involved"
-# OPE-237: whether this action is exactly one of the steps of a plan the user approved
-# for this request (computed by plan_steps.match_step; only while such a plan exists).
+# OPE-237: this action is exactly one of the steps of a plan the user approved for this
+# request (computed by plan_steps.match_step). There is deliberately no "not a step" line:
+# a plan only ever adds evidence for its own steps.
 PLAN_STEP = "this exact action is a step of a plan the user approved for this request"
-PLAN_NOT_STEP = "the user approved a plan for this request; this action is not one of its steps"
 _FILE_STATE_LINES = {
     "new": "target file: new",
     TRACKED_CLEAN: "target file: unchanged in git",
@@ -61,7 +61,6 @@ FACT_VOCABULARY = frozenset(
         DESTINATION_UNKNOWN,
         SECRET_INVOLVED,
         PLAN_STEP,
-        PLAN_NOT_STEP,
         *_FILE_STATE_LINES.values(),
     }
 )
