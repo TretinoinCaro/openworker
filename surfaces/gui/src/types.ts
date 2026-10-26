@@ -17,6 +17,7 @@ export type EventType =
   | "tool_started"
   | "tool_finished"
   | "iteration_end"
+  | "turn_summary"
   | "turn_end"
   | "error"
   | "input_rejected"
@@ -164,7 +165,8 @@ export type Item =
   // `approvalOrigin` = why the call ran without a card: "reviewer" (auto-approved by the
   // Auto-Approve reviewer; `approvalNote` carries its one-line reason) or "bypass"
   // (bypass-approvals mode). Rendered as a quiet debugging chip, deliberately subtle.
-  | { kind: "tool"; id: string; name: string; args: any; status: string; preview?: string; hidden?: number; standingRule?: string; reviewerReason?: string; allowAnyway?: boolean; approvalOrigin?: string; approvalNote?: string; approvalGrant?: string }
+  // `callId` = the tool call's id (OPE-238: links the item to its audit rows).
+  | { kind: "tool"; id: string; name: string; args: any; status: string; preview?: string; hidden?: number; standingRule?: string; reviewerReason?: string; allowAnyway?: boolean; approvalOrigin?: string; approvalNote?: string; approvalGrant?: string; callId?: string }
   | {
       kind: "approval";
       toolCallId?: string;

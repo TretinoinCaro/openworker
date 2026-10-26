@@ -8,6 +8,7 @@ import { TeamUpdateLine, TeamCreatedLine, foldTeamUpdates } from "./TeamUpdateLi
 import type { MessageSource } from "../api";
 import { ConnectorMessageCard } from "./ConnectorMessageCard";
 import { Icon } from "./Icon";
+import { UnaskedSummary, unaskedTools } from "./UnaskedSummary";
 
 // Long user pastes swallow the transcript (owner ask 2026-07-30): clamp past a generous
 // threshold with a more…/less… toggle. Normal typed messages never see the control; the
@@ -478,6 +479,9 @@ interface Props {
   onUndoMemory?: (id: number, previous?: string) => void;
   // §8.4 "Allow anyway" on a reviewer-denied tool: one-shot exact-action override.
   onAllowAnyway?: (name: string, args: any) => void;
+  // OPE-238: open Activity on one tool call's audit rows (from the "changes made without
+  // asking" summary). Without it the summary shows no audit links.
+  onOpenAudit?: (callId: string) => void;
 }
 
 // The transcript index whose notice gets the Retry button: the tail error notice, looking
@@ -537,13 +541,17 @@ function McpNotice({
 }
 
 
-export function Transcript({ items, running, streamingText, onRetry, onOpenConnectors, onUndoMemory, onAllowAnyway }: Props) {
+export function Transcript({ items, running, streamingText, onRetry, onOpenConnectors, onUndoMemory, onAllowAnyway, onOpenAudit }: Props) {
   const { t } = useTranslation();
   // §33 grouping: a turn = the maximal run of assistant/tool/resolved-approval items between
   // breakers (user, connector, notices, plan/dir requests…). Trailing assistant texts are the
   // ANSWER and render as bubbles after the group; interior assistant texts are narration and
   // stay inside. A run with no activity at all is just bubbles (unchanged chat behavior).
-  const blocks: Array<{ turn: TurnItem[]; live?: boolean } | { item: Item; i: number; sources?: MessageSource[]; steps?: Item[] }> = [];
+  const blocks: Array<
+    | { turn: TurnItem[]; live?: boolean }
+    | { unasked: ToolItem[] }
+    | { item: Item; i: number; sources?: MessageSource[]; steps?: Item[] }
+  > = [];
   let run: TurnItem[] = [];
   const flush = (live = false) => {
     if (!run.length) return;
@@ -559,6 +567,11 @@ export function Transcript({ items, running, streamingText, onRetry, onOpenConne
     if (turn.some((it) => it.kind !== "assistant")) blocks.push({ turn, live });
     else turn.forEach((t) => blocks.push({ item: t, i: -1 }));
     answers.forEach((a) => blocks.push({ item: a, i: -1 }));
+    // OPE-238: a finished turn ends with what ran without asking, after its answer.
+    if (!live) {
+      const unasked = unaskedTools(turn);
+      if (unasked.length) blocks.push({ unasked });
+    }
   };
   foldTeamUpdates(items).forEach(({ item, sources, steps }) => {
     const i = items.indexOf(item);
@@ -583,6 +596,8 @@ export function Transcript({ items, running, streamingText, onRetry, onOpenConne
   return (
     <div className="transcript">
       {blocks.map((block, bi) => {
+        if ("unasked" in block)
+          return <UnaskedSummary tools={block.unasked} onOpenAudit={onOpenAudit} key={bi} />;
         if ("turn" in block)
           return (
             <TurnGroup

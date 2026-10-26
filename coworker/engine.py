@@ -16,6 +16,7 @@ import logging
 from copy import deepcopy
 
 import asyncio
+import functools
 import json
 import time
 from dataclasses import dataclass, replace
@@ -120,6 +121,57 @@ Approver = Callable[[PermissionRequest], Awaitable[ApprovalOutcome]]
 
 async def _deny_all(_request: PermissionRequest) -> ApprovalOutcome:
     return ApprovalOutcome.DENY
+
+
+# OPE-238: the approval origins that mean "ran without asking": auto-approve let the
+# action through with no card. A card the user answered, a standing rule or trust the
+# user set up, and the bypass modes are the user's own choice and are not listed.
+_UNASKED_ORIGINS = frozenset({"gate_tier", "reviewer"})
+# Every turn ends with exactly one of these; the summary goes just before it, so the
+# event that ends a turn stays the last one (the headless runner reads it that way).
+_TURN_ENDINGS = frozenset({EventType.TURN_END, EventType.INTERRUPTED, EventType.ERROR})
+
+
+def _summarizes_turn(gen_fn: Callable[..., AsyncIterator[Event]]) -> Callable[..., AsyncIterator[Event]]:
+    """Wrap a turn generator (run / retry / resume) so that, when any action ran without
+    asking, one TURN_SUMMARY event lists them just before the turn ends.
+
+    An index, not a copy: tool call id, tool name, origin, status and the reviewer's
+    one-line reason. The arguments and results are already in the tool events and the
+    audit log, which can be filtered by the same call id."""
+
+    @functools.wraps(gen_fn)
+    async def wrapper(self: "TurnEngine", *args: Any, **kwargs: Any) -> AsyncIterator[Event]:
+        inner = gen_fn(self, *args, **kwargs)
+        unasked: list[dict[str, Any]] = []
+        try:
+            async for event in inner:
+                if event.type is EventType.TOOL_FINISHED:
+                    origin = event.data.get("approval_origin")
+                    if origin in _UNASKED_ORIGINS:
+                        unasked.append(
+                            {
+                                "tool_call_id": str(event.data.get("tool_call_id") or ""),
+                                "name": str(event.data.get("name") or ""),
+                                "origin": origin,
+                                "status": str(event.data.get("status") or ""),
+                                **(
+                                    {"note": str(event.data["approval_note"])}
+                                    if event.data.get("approval_note")
+                                    else {}
+                                ),
+                            }
+                        )
+                elif event.type in _TURN_ENDINGS and unasked:
+                    yield Event(EventType.TURN_SUMMARY, {"count": len(unasked), "actions": unasked})
+                    unasked = []
+                yield event
+        finally:
+            # A surface that stops reading mid-turn closes this wrapper; close the turn
+            # itself too, at once, so its own cleanup (run grants) runs as before.
+            await inner.aclose()
+
+    return wrapper
 
 
 class TurnEngine:
@@ -398,6 +450,7 @@ class TurnEngine:
         self._steering.append((text, source, activity))
 
     # -- main loop --------------------------------------------------------------
+    @_summarizes_turn
     async def run(
         self,
         user_input: "str | list",
@@ -532,6 +585,7 @@ class TurnEngine:
         notice.update({k: v for k, v in fields.items() if v is not None})
         self.messages.append(notice)
 
+    @_summarizes_turn
     async def retry(self) -> AsyncIterator[Event]:
         """Re-run the model loop after a provider error — no new user message; the failed
         turn's input is already the tail of history. Guarded on the tail being an error
@@ -570,6 +624,7 @@ class TurnEngine:
         info = workspace.describe()
         yield Event(EventType.SANDBOX_READY, {k: info.get(k) for k in ("provider", "enforcement", "reason", "sandbox") if info.get(k) is not None})
 
+    @_summarizes_turn
     async def resume(self) -> AsyncIterator[Event]:
         """Continue a turn that was suspended at a prompt and persisted — durable resume after a
         restart (or engine eviction). Re-process the trailing assistant message's UNANSWERED

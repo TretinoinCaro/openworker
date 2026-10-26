@@ -370,6 +370,8 @@ export function App() {
   // composer's "No model connected" chip. Default true so we don't flash the chip before settings
   // load; corrected by loadSettings.
   const [modelReady, setModelReady] = useState(true);
+  // OPE-238: Activity opened on one tool call's audit rows (unset = all activity).
+  const [auditCallId, setAuditCallId] = useState<string | undefined>(undefined);
   const [surface, setSurface] = useState<
     "session" | "scheduled" | "audit" | "inbox" | "persona" | "settings"
   >("session");
@@ -1062,6 +1064,7 @@ export function App() {
               d.allow_anyway,
               d.approval_origin,
               d.approval_note,
+              d.tool_call_id,
             ),
           );
           // §8.4 breaker: the reviewer paused itself for the rest of the turn — say so
@@ -2070,7 +2073,10 @@ export function App() {
           setSurface("scheduled");
         }}
         onOpenIntegrations={() => openSettings("connectors")}
-        onOpenAudit={() => setSurface("audit")}
+        onOpenAudit={() => {
+          setAuditCallId(undefined);
+          setSurface("audit");
+        }}
         onOpenInbox={() => setSurface("inbox")}
         scheduledActive={surface === "scheduled"}
         integrationsActive={surface === "settings" && settingsTab === "connectors"}
@@ -2120,7 +2126,7 @@ export function App() {
           }}
         />
       ) : surface === "audit" ? (
-        <AuditView />
+        <AuditView callId={auditCallId} />
       ) : surface === "inbox" ? (
         <InboxView onOpenSession={openSessionFromInbox} />
       ) : surface === "persona" ? (
@@ -2315,6 +2321,11 @@ export function App() {
                     onRetry={retry}
                     onOpenConnectors={() => openSettings("connectors")}
                     onAllowAnyway={allowAnyway}
+                    onOpenAudit={(callId) => {
+                      // OPE-238: an item of "changes made without asking" → its audit rows.
+                      setAuditCallId(callId);
+                      setSurface("audit");
+                    }}
                     onUndoMemory={(id, previous) => void undoMemorySave(id, previous)}
                     // §33 ref #3: sub-threshold streamed text renders INSIDE the live turn
                     // group (header when collapsed, quiet line when expanded) — never as a
@@ -2722,6 +2733,7 @@ function updateLastTool(
   allowAnyway?: boolean,
   approvalOrigin?: string,
   approvalNote?: string,
+  callId?: string,
 ): Item[] {
   const copy = [...items];
   for (let i = copy.length - 1; i >= 0; i--) {
@@ -2737,6 +2749,7 @@ function updateLastTool(
         ...(allowAnyway ? { allowAnyway } : {}),
         ...(approvalOrigin ? { approvalOrigin } : {}),
         ...(approvalNote ? { approvalNote } : {}),
+        ...(callId ? { callId } : {}),
       };
       break;
     }

@@ -72,6 +72,7 @@ export function itemsFromMessages(messages: ConversationMessage[]): Item[] {
         items.push({
           kind: "tool",
           id: tc.id,
+          ...(tc.id ? { callId: tc.id } : {}),
           name: tc.function?.name,
           args,
           status: denied ? "denied" : "ok",

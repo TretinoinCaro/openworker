@@ -172,6 +172,11 @@ record states it.
 | `provider_errors.log` | full cause chains of failed model calls, credentials redacted |
 | `audit.db` | OpenWorker's audit log for the session |
 
+A turn in which auto-approve let actions run with no approval card (a safe-change tier or a
+reviewer "allow") ends with a `turn_summary` event in `events.jsonl`, just before the event
+that ends the turn. It lists each action's tool call id, tool, origin and status; the audit
+log can be filtered by the same call id (`/v1/audit?call_id=…`).
+
 The trajectory and the exit code are the stable contract.
 
 A transient provider failure or an empty reply does not end the run: the runner waits

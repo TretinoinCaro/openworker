@@ -288,6 +288,17 @@
       "undone_forgotten": "Okay — forgotten.",
       "undone_restored": "Okay — put back the way it was.",
       "undo": "Undo"
+    },
+    "unasked": {
+      "summary": "{{count}} changes made without asking",
+      "summary_one": "{{count}} change made without asking",
+      "group_files": "Files",
+      "group_commands": "Commands",
+      "group_other": "Other actions",
+      "exit": "exit {{code}}",
+      "audit": "audit log",
+      "more_lines": "… {{count}} more lines",
+      "more_lines_one": "… {{count}} more line"
     }
   },
   "rail": {
@@ -924,7 +935,9 @@
     "fallback_tool": "tool",
     "fallback_event": "event",
     "session": "session",
-    "resource": "resource: {{value}}"
+    "resource": "resource: {{value}}",
+    "call_filter": "Showing one tool call: {{id}}",
+    "call_filter_clear": "Show all"
   },
   "plan": {
     "proposed": "The agent proposed a plan",

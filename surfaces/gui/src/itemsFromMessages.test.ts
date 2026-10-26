@@ -161,3 +161,27 @@ describe("itemsFromMessages mcp failure", () => {
     });
   });
 });
+
+// OPE-238: a replayed tool item carries its tool call's id, so the "changes made without
+// asking" summary can link it to its audit rows after a reload too.
+describe("itemsFromMessages call ids", () => {
+  it("puts the tool call id on the tool item", () => {
+    const items = itemsFromMessages([
+      { role: "user", content: "run the tests" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [{ id: "call_9", function: { name: "run_shell", arguments: '{"command": "pytest"}' } }],
+      },
+      {
+        role: "tool",
+        tool_call_id: "call_9",
+        content: '{"exit_code": 0}',
+        _display: { approval_origin: "reviewer" },
+      },
+    ] as any);
+    const tool = items.find((i: any) => i.kind === "tool") as any;
+    expect(tool.callId).toBe("call_9");
+    expect(tool.approvalOrigin).toBe("reviewer");
+  });
+});
