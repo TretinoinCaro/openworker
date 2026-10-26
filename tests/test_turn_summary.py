@@ -93,8 +93,16 @@ def test_each_turn_gets_its_own_summary(tmp_path):
         ],
     )
     engine.reviewer = _FakeReviewer({"run_shell": "allow"})
-    first = _summaries(_run(engine, "run the tests"))
-    second = _summaries(_run(engine, "lint and type-check"))
+
+    # Both requests in ONE event loop, as in the app. The engine's stop signal is an
+    # asyncio.Event; a second asyncio.run() would wait on it from a different loop, and
+    # that wait failing reads as "stopped", dropping a model turn at random.
+    async def _both():
+        first = [ev async for ev in engine.run("run the tests")]
+        second = [ev async for ev in engine.run("lint and type-check")]
+        return _summaries(first), _summaries(second)
+
+    first, second = asyncio.run(_both())
     assert [s.data["count"] for s in first] == [1]
     assert [s.data["count"] for s in second] == [2]
 
