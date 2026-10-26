@@ -127,6 +127,14 @@ describe("origin chips — standing MCP trust names its source", () => {
     expect(chip.text).toBe("allowed for this request");
     expect(chip.title).toContain("Allow for this request");
     expect(chip.title).toContain("expired when the answer finished");
+
+    // OPE-233: an inert, reversible write the gate let through without the reviewer —
+    // the chip says what kind of change it was and that it can be undone.
+    cleanup();
+    const tier = chipFor("gate_tier");
+    expect(tier.text).toBe("safe change, no card");
+    expect(tier.title).toContain("without the reviewer");
+    expect(tier.title).toContain("can be undone");
   });
 });
 
