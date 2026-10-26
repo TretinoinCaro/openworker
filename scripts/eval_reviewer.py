@@ -272,7 +272,10 @@ def _stub_decision_transport(url: str, headers: dict[str, str], body: dict[str, 
     if key == "ask":
         p["broader"] = 0.9
     if key == "deny":
-        p["contrary"] = 0.95
+        # Decisions asks `contrary`; Jev asks it as two parts combined in code.
+        for name in ("contrary", "user_restriction", "breaks_restriction"):
+            if name in p:
+                p[name] = 0.95
     if url.endswith("/v1/decisions"):
         return 200, {"model": "stub", "answers": [
             {"name": n, "type": "predicate", "probability": v} for n, v in p.items()

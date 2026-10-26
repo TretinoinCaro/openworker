@@ -17,6 +17,8 @@ from coworker.decision_reviewer import (
     BACKENDS,
     COMBINED_NAMES,
     DECISIONS_QUESTIONS,
+    JEV_GATES,
+    JEV_ORDER,
     JEV_QUESTIONS,
     JEV_SPLITS,
     STOP_BLOCKS_BELOW_REQUESTED,
@@ -26,6 +28,7 @@ from coworker.decision_reviewer import (
     OpenAIDecisionsBackend,
     build_decision_reviewer,
     combine_answers,
+    combine_jev,
     derive_jev,
     evidence_state,
     make_auto_reviewer,
@@ -124,7 +127,7 @@ def test_evidence_state_carries_facts_not_provenance():
 
 def test_cut_offs_and_models_are_frozen_per_backend():
     assert (DECISIONS.run_threshold, DECISIONS.risk_threshold, DECISIONS.stop_threshold) == (0.80, 0.40, 0.60)
-    assert (JEV.run_threshold, JEV.risk_threshold, JEV.stop_threshold) == (0.90, 0.40, 0.60)
+    assert (JEV.run_threshold, JEV.risk_threshold, JEV.stop_threshold) == (0.80, 0.40, 0.60)
     assert DECISIONS.default_model == "gpt-6-luna"
     assert JEV.default_model == "jev-1.13.0"  # pinned, not jev-latest (the docs: versioned ids carry the patch number)
 
@@ -194,10 +197,14 @@ def test_missing_or_bad_answers_ask():
 
 @pytest.mark.parametrize("parts, derived, expected", [
     ({"shared_item": 0.9, "item_written": 0.1, "one_meaning": 0.1}, "target_unpinned", 0.9 * 0.9 * 0.9),
-    ({"named_target": 0.95, "acts_on_named": 0.1}, "target_mismatch", 0.95 * 0.9),
     ({"has_recipient": 0.9, "recipient_written": 0.95}, "outside_recipient", 0.9 * 0.05),
     ({"sets_hour": 0.98, "hour_given": 0.02}, "agent_chose_time", 0.98 * 0.98),
-    ({"named_place": 0.9, "acts_in_named_place": 0.1}, "place_mismatch", 0.9 * 0.9),
+    ({"user_named_item": 0.9, "names_other_item": 0.8}, "target_mismatch", 0.9 * 0.8),
+    ({"user_named_place": 0.9, "names_other_place": 0.8}, "place_mismatch", 0.9 * 0.8),
+    ({"user_restriction": 0.9, "breaks_restriction": 0.8}, "contrary", 0.9 * 0.8),
+    ({"delegated_task": 0.9, "only_reads": 0.8}, "hand_off_read", 0.9 * 0.8),
+    ({"named_place": 0.9, "acts_in_named_place": 0.1}, "named_mismatch", 0.9 * 0.9),
+    ({"named_target": 0.95, "acts_on_named": 0.1}, "named_mismatch", 0.95 * 0.9),
 ])
 def test_jev_split_parts_combine_by_product(parts, derived, expected):
     base = {q.name: 0.02 for q in JEV_QUESTIONS}
@@ -205,13 +212,61 @@ def test_jev_split_parts_combine_by_product(parts, derived, expected):
     assert derive_jev(base)[derived] == pytest.approx(expected, abs=0.02)
 
 
+def _cj(**over):
+    base = {q.name: 0.02 for q in JEV_QUESTIONS}
+    base["requested"] = 0.97
+    base.update(over)
+    return combine_jev(derive_jev(base), run_threshold=0.80, stop_threshold=0.60, risk_threshold=0.40)[0]
+
+
 def test_jev_missing_part_fails_closed():
     base = {q.name: 0.02 for q in JEV_QUESTIONS}
     base["requested"] = 0.97
     del base["acts_in_named_place"]
-    assert _combine(derive_jev(base), run=0.90) == "unsure"
+    assert combine_jev(derive_jev(base), run_threshold=0.80, stop_threshold=0.60, risk_threshold=0.40)[0] == "unsure"
     for cond, nots in JEV_SPLITS.values():
         assert {cond, *nots} <= {q.name for q in JEV_QUESTIONS}
+    for gate, q in JEV_GATES.values():
+        assert {gate, q} <= {q.name for q in JEV_QUESTIONS}
+    assert len(JEV_ORDER) == len(set(JEV_ORDER)) == len(JEV_QUESTIONS)
+
+
+def test_jev_plain_requested_action_is_allowed():
+    assert _cj() == "allow"
+    assert _cj(requested=0.85) == "allow"   # allow line 0.80
+    assert _cj(requested=0.79) == "unsure"
+
+
+def test_jev_a_wrong_place_the_user_named_blocks_or_asks():
+    assert _cj(user_named_place=0.95, names_other_place=0.9, requested=0.10) == "deny"
+    assert _cj(user_named_place=0.95, names_other_place=0.9) == "unsure"   # card rule
+    # "different place" with no place named by the user is not a mismatch
+    assert _cj(user_named_place=0.05, names_other_place=0.95) == "allow"
+
+
+def test_jev_named_item_or_place_net_turns_an_allow_into_a_card_and_nothing_else():
+    # Measured 2026-10-26: the gated questions let five wrong places through on the sealed rows
+    # that this check catches. It only ever turns an allow into a card.
+    assert _cj(named_place=0.95, acts_in_named_place=0.05) == "unsure"
+    assert _cj(named_target=0.95, acts_on_named=0.05) == "unsure"
+    assert _cj(named_place=0.95, acts_in_named_place=0.5) == "allow"   # 0.475, under 0.60
+    assert _cj(named_place=0.95, acts_in_named_place=0.05, requested=0.10) == "unsure"   # never a block
+
+
+def test_jev_restriction_counts_only_when_the_user_set_one():
+    assert _cj(breaks_restriction=0.95) == "allow"
+    assert _cj(user_restriction=0.95, breaks_restriction=0.95, requested=0.10) == "deny"
+
+
+def test_jev_a_read_under_a_hand_off_request_asks_instead_of_blocking():
+    hit = dict(unrelated_destination=0.9, requested=0.05, delegated_task=0.9)
+    assert _cj(**hit, only_reads=0.9) == "unsure"
+    assert _cj(**hit, only_reads=0.1) == "deny"   # a send under the same request stays blocked
+    assert _cj(unrelated_destination=0.9, requested=0.05, only_reads=0.9) == "deny"   # no hand-off
+
+
+def test_jev_deleting_something_unnamed_asks():
+    assert _cj(deletes_unnamed=0.9) == "unsure"
 
 
 def test_state_budget_fits_jevs_per_question_limit():
@@ -251,13 +306,16 @@ def test_jev_examples_are_not_eval_rows():
 # -- end to end through a backend ----------------------------------------------------------
 
 
+_CONTRARY = {DECISIONS: {"contrary": 0.95}, JEV: {"user_restriction": 0.95, "breaks_restriction": 0.95}}
+
+
 @pytest.mark.parametrize("backend", [DECISIONS, JEV])
 def test_end_to_end_allow_ask_stop(backend):
     assert _review(_rv(backend)[0]).verdict == "allow"
     assert _review(_rv(backend, {"moves_money": 0.9})[0]).verdict == "unsure"
-    assert _review(_rv(backend, {"contrary": 0.95, "requested": 0.10})[0]).verdict == "deny"
+    assert _review(_rv(backend, {**_CONTRARY[backend], "requested": 0.10})[0]).verdict == "deny"
     # Card rule: the same stop signal on an action the user asked for asks instead of blocking.
-    assert _review(_rv(backend, {"contrary": 0.95})[0]).verdict == "unsure"
+    assert _review(_rv(backend, _CONTRARY[backend])[0]).verdict == "unsure"
 
 
 def test_decisions_place_mismatch_stops():
@@ -265,7 +323,12 @@ def test_decisions_place_mismatch_stops():
 
 
 def test_jev_wrong_place_stops():
-    assert _review(_rv(JEV, {"named_place": 0.95, "acts_in_named_place": 0.05, "requested": 0.10})[0]).verdict == "deny"
+    assert _review(_rv(JEV, {"user_named_place": 0.95, "names_other_place": 0.95, "requested": 0.10})[0]).verdict == "deny"
+
+
+def test_jev_named_place_net_end_to_end():
+    v = _review(_rv(JEV, {"named_place": 0.95, "acts_in_named_place": 0.05})[0])
+    assert v.verdict == "unsure" and "named-item/place check" in v.reason
 
 
 @pytest.mark.parametrize("backend", [DECISIONS, JEV])
