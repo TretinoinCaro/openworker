@@ -135,6 +135,7 @@ describe("origin chips — standing MCP trust names its source", () => {
     expect(tier.text).toBe("safe change, no card");
     expect(tier.title).toContain("without the reviewer");
     expect(tier.title).toContain("can be undone");
+    expect(tier.title).toContain("a document or image"); // OPE-233: JSON/YAML left the tier
   });
 });
 
