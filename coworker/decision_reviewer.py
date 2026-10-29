@@ -56,8 +56,9 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
+from .review_facts import PLAN_STEP
 from .reviewer import APPROVAL_CONTEXT_MAX_CHARS, Verdict
 
 # TypeSafe's documented limits (docs.typesafe.ai/models.md): 32k tokens for the state plus any
@@ -366,13 +367,22 @@ def structured_environment(known_world: str) -> dict[str, Any]:
     return env
 
 
+_ENGINE_FILE_LINE = re.compile(r"^(?P<path>.*) was (?:created|downloaded) by the agent (?:just now|1 step ago|\d+ steps ago)$")
+
+
 def agent_made_file_unrequested(provenance: str, request: str, history: list[dict[str, Any]]) -> bool:
     """Deterministic, so it lives in code (TypeSafe: keep deterministic work in code). The
     engine writes `provenance` only when the action would run a file the agent itself made
     or downloaded; it is unrequested unless the user's own words name that file."""
     if not provenance:
         return False
-    name = provenance.split(" was ", 1)[0].strip().replace("\\", "/")
+    # Only the engine's own line counts (coworker/provenance.py, `ProvenanceNote.render`):
+    # "<path> was created|downloaded by the agent just now|1 step ago|N steps ago". Any
+    # other text in this slot (an eval harness's label, say) says nothing about a file.
+    line = _ENGINE_FILE_LINE.match(provenance.strip())
+    if not line:
+        return False
+    name = line.group("path").strip().replace("\\", "/")
     words = " ".join([request] + [str(m.get("text", "")) for m in history or []]).replace("\\", "/")
     if not name:
         return True
@@ -1097,8 +1107,19 @@ class DecisionReviewer:
         arguments: dict[str, Any],
         provenance: str = "",
         action_context: dict[str, Any] | None = None,
+        facts: Sequence[str] = (),
     ) -> DecisionVerdict:
-        """Never raises. Every failure mode is an `unsure`."""
+        """Never raises. Every failure mode is an `unsure`.
+
+        `facts` are the engine's own lines (OPE-235/OPE-237, coworker/review_facts.py), the
+        same ones the session-model reviewer gets. They are used in code, not added to the
+        state the model reads, so the answers stay the ones the questions were measured on:
+        * PLAN_STEP (the engine matched this exact action to a step of a plan the user
+          approved) counts as the user asking for it: `requested` is set to 1.0. Every other
+          rule still applies, so a stop signal gives a card (card rule), never an allow.
+        * The others (outside content read, destination named or not, file state, a
+          secret involved) are accepted and not yet used: using them changes the measured
+          behaviour, so that waits for a measurement (OPE-223 is the per-argument version)."""
         if action_context and action_context.get("context_unavailable"):
             return self._count(_fail_closed("approval context is unavailable", error=True))
         if (
@@ -1136,7 +1157,14 @@ class DecisionReviewer:
             return self._count(_fail_closed(
                 f"{self.backend.label} refused: {', '.join(answer.refused)}", refused=True, **diag,
             ))
+        plan_step = PLAN_STEP in facts
+        if plan_step:
+            # Keep the model's own answer for the audit log next to the override.
+            values["_requested_by_model"] = values.get("requested")
+            values["requested"] = 1.0
         verdict, reason = self.backend.combine(values)
+        if plan_step:
+            reason = f"a step of a plan the user approved; {reason}"
         return self._count(DecisionVerdict(verdict, reason, **diag))
 
     def _count(self, verdict: DecisionVerdict) -> DecisionVerdict:

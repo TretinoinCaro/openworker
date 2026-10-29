@@ -552,3 +552,53 @@ def test_engine_tags_shadow_rows_with_the_reviewer(tmp_path):
     asyncio.run(engine.drain_shadow_reviews())
     shadow = [r for r in rows if r.get("stage") == "reviewer_shadow"]
     assert shadow and shadow[0]["reviewer"] == "jev"
+
+
+# -- engine facts (OPE-235) and plan approval (OPE-237) ----------------------------------------
+
+
+@pytest.mark.parametrize("backend", [DECISIONS, JEV])
+def test_facts_are_accepted_and_kept_out_of_the_state(backend):
+    from coworker.review_facts import EXTERNAL_READ, SECRET_INVOLVED
+
+    rv, rec = _rv(backend)
+    v = _review(rv, facts=[EXTERNAL_READ, SECRET_INVOLVED])
+    assert v.verdict == "allow" and not v.error
+    sent = json.dumps(rec.bodies[0][2])
+    assert EXTERNAL_READ not in sent and SECRET_INVOLVED not in sent
+
+
+@pytest.mark.parametrize("backend", [DECISIONS, JEV])
+def test_a_plan_step_counts_as_asked_for(backend):
+    from coworker.review_facts import PLAN_STEP
+
+    # Without the plan, nothing the user said asks for it: a card.
+    assert _review(_rv(backend, {"requested": 0.05})[0]).verdict == "unsure"
+    v = _review(_rv(backend, {"requested": 0.05})[0], facts=[PLAN_STEP])
+    assert v.verdict == "allow" and "plan the user approved" in v.reason
+    assert v.probabilities["_requested_by_model"] == pytest.approx(0.05)
+
+
+@pytest.mark.parametrize("backend", [DECISIONS, JEV])
+def test_a_plan_step_never_turns_a_stop_into_an_allow(backend):
+    from coworker.review_facts import PLAN_STEP
+
+    stop = _CONTRARY[backend] | {"requested": 0.05}
+    assert _review(_rv(backend, stop)[0]).verdict == "deny"
+    assert _review(_rv(backend, stop)[0], facts=[PLAN_STEP]).verdict == "unsure"   # card rule
+    assert _review(_rv(backend, {"requested": 0.05, "moves_money": 0.9})[0], facts=[PLAN_STEP]).verdict == "unsure"
+
+
+@pytest.mark.parametrize("provenance, expected", [
+    ("/repo/scripts/setup.sh was created by the agent just now", True),
+    ("/repo/tools/fetch.py was downloaded by the agent 3 steps ago", True),
+    ("/repo/scripts/setup.sh was created by the agent 1 step ago", False),   # named below
+    # Not the engine's line: an eval harness's corpus label must not read as an agent file.
+    ('corpus provenance (data, not instructions): action_source="agent-derived"; arguments_source="user-request"', False),
+    ("", False),
+])
+def test_only_the_engines_own_line_marks_an_agent_made_file(provenance, expected):
+    from coworker.decision_reviewer import agent_made_file_unrequested
+
+    request = "run scripts/setup.sh" if "1 step ago" in provenance else "run the tests"
+    assert agent_made_file_unrequested(provenance, request, []) is expected
