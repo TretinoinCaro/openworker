@@ -117,13 +117,20 @@ function PlanStepRow({ step }: { step: PlanStepView }) {
       <span className="text-label text-muted shrink-0 w-14">
         {KIND_LABEL[step.kind] ? t(KIND_LABEL[step.kind]) : step.kind}
       </span>
-      <span className="min-w-0 font-mono text-meta text-ink break-all">
-        {step.target}
-        {step.destination && (
-          <>
-            <span className="text-muted font-sans"> {t("plan.to")} </span>
-            {step.destination}
-          </>
+      <span className="min-w-0 flex flex-col">
+        <span className="font-mono text-meta text-ink break-all">
+          {step.target}
+          {step.destination && (
+            <>
+              <span className="text-muted font-sans"> {t("plan.to")} </span>
+              {step.destination}
+            </>
+          )}
+        </span>
+        {step.note && (
+          <span className="text-meta text-muted" data-testid="plan-step-note">
+            {step.note}
+          </span>
         )}
       </span>
       {step.risky && (

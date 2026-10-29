@@ -60,6 +60,7 @@ export function planItemFromPayload(d: any): PlanItem {
           kind: s.kind,
           target: s.target,
           destination: typeof s.destination === "string" && s.destination ? s.destination : undefined,
+          note: typeof s.note === "string" && s.note ? s.note : undefined,
           risky: !!s.risky,
         }))
     : undefined;

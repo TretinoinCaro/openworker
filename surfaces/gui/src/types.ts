@@ -39,6 +39,7 @@ export interface PlanStepView {
   kind: string;
   target: string;
   destination?: string;
+  note?: string;
   risky: boolean;
 }
 

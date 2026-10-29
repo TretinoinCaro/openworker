@@ -11,7 +11,7 @@ const AUTO = planItemFromPayload({
   plan: "Do the three tasks in TODO.md.",
   auto_approve: true,
   steps: [
-    { kind: "write", target: "summary.txt", risky: false },
+    { kind: "write", target: "summary.txt", note: "a two-sentence summary of notes.txt", risky: false },
     { kind: "delete", target: "old-notes.txt", risky: true },
     { kind: "send", target: "dummy.csv", destination: "httpbin.org", risky: true },
   ],
@@ -23,7 +23,9 @@ describe("PlanCard in auto-approve (OPE-237)", () => {
     const rows = screen.getAllByTestId("plan-step");
     expect(rows.length).toBe(3);
     expect(rows[0].textContent).toContain("summary.txt");
+    expect(within(rows[0]).getByTestId("plan-step-note").textContent).toBe("a two-sentence summary of notes.txt");
     expect(within(rows[0]).queryByTestId("plan-step-risky")).toBeNull();
+    expect(within(rows[1]).queryByTestId("plan-step-note")).toBeNull();
     expect(within(rows[1]).getByTestId("plan-step-risky")).toBeTruthy();
     expect(rows[2].textContent).toContain("dummy.csv");
     expect(rows[2].textContent).toContain("httpbin.org");
@@ -75,7 +77,7 @@ describe("planItemFromPayload", () => {
       auto_approve: true,
       steps: [{ kind: "run", target: "pytest -q", risky: false }, { kind: 3 }, "nope", null],
     });
-    expect(item.steps).toEqual([{ kind: "run", target: "pytest -q", destination: undefined, risky: false }]);
+    expect(item.steps).toEqual([{ kind: "run", target: "pytest -q", destination: undefined, note: undefined, risky: false }]);
     expect(item.autoApprove).toBe(true);
     expect(planItemFromPayload({ plan: "x" }).steps).toBeUndefined();
   });

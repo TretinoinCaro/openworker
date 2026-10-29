@@ -1568,6 +1568,9 @@ class TurnEngine:
                 tool_call.arguments or {},
                 resolve=self.permissions._candidate,
                 egress_host=self.permissions.egress_host,
+                # A command's paths are judged from the shell's folder (OPE-232); when it
+                # cannot be known, no shell action is a step.
+                shell_base=self.permissions.shell_cwd,
             ):
                 facts.append(review_facts.PLAN_STEP)
         return {"facts": facts} if facts else {}
@@ -2707,13 +2710,14 @@ class TurnEngine:
                 "approved": False,
                 "error": "list every action in `steps` (kind write / delete / run / send, its "
                 "target, and for send the destination), then propose again",
+                **({"dropped_steps": dropped} if dropped else {}),
             }
         else:
             shown = [
                 {
                     **step.as_dict(),
-                    "risky": plan_steps.step_is_risky(step)
-                    or (step.kind in ("write", "delete") and not self.permissions._under_root(step.target)),
+                    "risky": plan_steps.step_is_risky(step, resolve=self.permissions._candidate)
+                    or (step.kind in ("write", "delete") and not self.permissions._under_writable_root(step.target)),
                 }
                 for step in steps
             ]

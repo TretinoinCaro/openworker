@@ -22,8 +22,10 @@ _STEPS_DESCRIPTION = (
     "In auto-approve mode, use it before work with several actions the user did not spell "
     "out (for example tasks from a file): give a one-line summary in `plan` and every "
     "action in `steps`. Each approved step then runs without an approval card for the "
-    "rest of this request; anything not listed is reviewed as usual. Be exact: the same "
-    "file path, the same command, the same file and destination host you will use."
+    "rest of this request; anything not listed is reviewed as usual. Be exact: a step's "
+    "target is only the file path, the exact command line, or the file name you will "
+    "use, with nothing added; any explanation goes in `note`. Use `send` for a file "
+    "leaving the machine and name its destination host plainly."
 )
 
 _STEPS_SCHEMA = {
@@ -48,11 +50,15 @@ _STEPS_SCHEMA = {
                             },
                             "target": {
                                 "type": "string",
-                                "description": "the file path, the exact command, or what is sent",
+                                "description": "write/delete: the file path only; run: the exact command line only; send: the file name only (or, for a message, what it is). No description here.",
                             },
                             "destination": {
                                 "type": "string",
                                 "description": "send only: the host (example.com) or the connector recipient",
+                            },
+                            "note": {
+                                "type": "string",
+                                "description": "optional: a few words for the user on what or why; never checked",
                             },
                         },
                         "required": ["kind", "target"],
