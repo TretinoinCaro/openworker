@@ -309,9 +309,12 @@ def test_wait_is_capped_at_the_shell_maximum(executor):
     desc = _TASK_OUTPUT_SCHEMA["function"]["parameters"]["properties"]["wait_seconds"]["description"]
     assert f"max {int(_MAX_TIMEOUT)}" in desc
     # The wrapper clamps before the executor sees it: a huge wait on an exited task is instant.
+    # The task prints nothing, so only its exit can end the wait. With a printing command the
+    # wait may legitimately return on the new line a moment before the process exits, still
+    # "running" - the early return on new output tested above.
     reg = ToolRegistry()
     reg.register_all(shell_tools(executor))
-    started = reg.execute("run_shell", {"command": QUICK_ECHO, "run_in_background": True})
+    started = reg.execute("run_shell", {"command": EXIT_OK, "run_in_background": True})
     t0 = time.monotonic()
     res = reg.execute("shell_task_output", {"task_id": started["task_id"], "wait_seconds": 10 ** 6})
     assert res["status"] == "exited" and time.monotonic() - t0 < 5
