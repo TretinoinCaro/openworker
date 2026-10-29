@@ -25,6 +25,7 @@ import {
   setAutoApproveShadow,
   setCompactionSettings,
   setContextBar,
+  setHideReasoningRunning,
   setOnboarded,
   setPdfSettings,
   setScratchBase,
@@ -71,6 +72,7 @@ import { MachinesSection } from "./MachinesSection";
 import { RemoteConnectorsPanel } from "./RemoteConnectorsPanel";
 import { MemorySection } from "./MemorySection";
 import { SandboxSection } from "./SandboxSection";
+import { CustomizationTab } from "./CustomizationTab";
 import { PersonasTab } from "./PersonasTab";
 import { SkillsTab } from "./SkillsTab";
 import { showPersonas } from "../flags";
@@ -93,6 +95,8 @@ export type SetTab =
   | "sandbox"
   | "machines"
   | "connectors"
+  // UX-058: the services behind the tools (web search provider + keys, fetch switch).
+  | "customization"
   | "personas"
   // UX-049: per-connector glance pages (App group), shown once connected somewhere.
   | "slack"
@@ -146,6 +150,7 @@ const SET_GROUPS: { name: string; nameKey?: string; scope: "app" | "machine" | "
     tabs: [
       { key: "models", label: "Models & Keys", labelKey: "settings.tab.models", icon: "code" },
       { key: "connectors", label: "Connectors", labelKey: "nav.connectors", icon: "plug" },
+      { key: "customization", label: "Customization", labelKey: "settings.tab.customization", icon: "sliders" },
       { key: "context", label: "Context optimization", labelKey: "settings.tab.context", icon: "refresh" },
       { key: "skills", label: "Skills", labelKey: "settings.tab.skills", icon: "book" },
       { key: "memory", label: "Memory", labelKey: "settings.tab.memory", icon: "archive" },
@@ -396,6 +401,8 @@ export function SettingsView({
             />
           ) : tab === "sandbox" ? (
             <SandboxSection key={scopeId || "local"} machine={scoped} onProviderChanged={onSandboxProviderChanged} />
+          ) : tab === "customization" ? (
+            <CustomizationTab key={scopeId || "local"} machine={scoped} />
           ) : tab === "machines" ? (
             <MachinesSection />
           ) : tab === "slack" || tab === "github" ? (
@@ -1314,14 +1321,24 @@ function CompactionCard({ machine }: { machine?: Machine | null }) {
 // -- Composer: context-window bar (owner ask 2026-07-30) ------------------------
 // The chip's bar is context-window occupancy; the session total (unbounded) lives in
 // the popover. Some people would rather not watch a meter at all, hence the toggle.
+// #611: the same card also holds "hide thinking while I work" — a persisted, user-global
+// checkbox that collapses the live reasoning stream to a quiet indicator while a turn
+// runs. The finalized reasoning still appears after the turn, so nothing is lost.
 function ContextBarCard() {
   const { t } = useTranslation();
   const [shown, setShown] = useState<boolean | null>(null);
+  const [hidden, setHidden] = useState<boolean | null>(null);
 
   useEffect(() => {
     getSettings()
-      .then((s) => setShown(s.context_bar === true))
-      .catch(() => setShown(false));
+      .then((s) => {
+        setShown(s.context_bar === true);
+        setHidden(s.hide_reasoning_running === true);
+      })
+      .catch(() => {
+        setShown(false);
+        setHidden(false);
+      });
   }, []);
 
   const save = async (next: boolean) => {
@@ -1329,7 +1346,12 @@ function ContextBarCard() {
     await setContextBar(next);
   };
 
-  if (shown === null) return null;
+  const saveHidden = async (next: boolean) => {
+    setHidden(next);
+    await setHideReasoningRunning(next);
+  };
+
+  if (shown === null || hidden === null) return null;
   return (
     <div className={CARD + " p-4 mb-4"} data-testid="context-bar-card">
       <div className={FIELD_LABEL}>{t("settings.composer_section")}</div>
@@ -1344,6 +1366,19 @@ function ContextBarCard() {
         <span>
           <span className="block text-ui text-ink">{t("settings.context_bar_title")}</span>
           <span className="block text-meta text-muted">{t("settings.context_bar_desc")}</span>
+        </span>
+      </label>
+      <label className="flex items-start gap-3 py-2">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          data-testid="hide-reasoning-toggle"
+          checked={hidden}
+          onChange={(e) => saveHidden(e.target.checked)}
+        />
+        <span>
+          <span className="block text-ui text-ink">{t("settings.hide_reasoning_title")}</span>
+          <span className="block text-meta text-muted">{t("settings.hide_reasoning_desc")}</span>
         </span>
       </label>
     </div>
