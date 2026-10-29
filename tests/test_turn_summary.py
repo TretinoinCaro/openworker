@@ -52,7 +52,10 @@ def test_lists_gate_tier_and_reviewer_allowed_actions_before_turn_end(tmp_path):
     assert all(i["status"] == "ok" for i in items)
     assert all(i["tool_call_id"] for i in items)
     assert items[1]["note"] == "scripted allow"  # the reviewer's one-line reason rides along
+    assert items[0]["tier"] == "inert_write" and "tier" not in items[1]
+    assert all(i["effect"] == "change" for i in items)
     assert summaries[0].data["count"] == 2
+    assert summaries[0].data["failed"] == 0 and summaries[0].data["reads"] == 0
 
 
 def test_no_event_when_everything_was_asked(tmp_path):
@@ -178,3 +181,116 @@ def test_audit_store_filters_by_call_id(tmp_path):
     assert sorted(r["stage"] for r in rows) == ["finished", "started"]
     assert {r["call_id"] for r in rows} == {"a1"}
     assert len(store.list()) == 3
+
+
+# -- the count means "changed state, and nobody approved it" ---------------------------
+
+
+def _shell_returning(engine, results: dict[str, dict]):
+    """Replace the test shell with one that answers each command from `results`."""
+
+    def run_shell(command: str) -> dict:
+        """Run a command.
+
+        Args:
+            command: the command line
+        """
+        return results[command]
+
+    engine.registry.register(run_shell, metadata=engine.registry.get("run_shell").metadata)
+
+
+def test_the_proposed_event_carries_the_call_id(tmp_path):
+    # Two same-named calls in one batch must pair with their own finished events.
+    engine, _rows, _approvals = _engine(
+        tmp_path,
+        [
+            _tool_turn(("run_shell", {"command": "pytest -q"}), ("run_shell", {"command": "ruff check"})),
+            AssistantTurn(text="done", finish_reason="stop"),
+        ],
+    )
+    engine.reviewer = _FakeReviewer({"run_shell": "allow"})
+    events = _run(engine, "check")
+    proposed = [ev.data["tool_call_id"] for ev in events if ev.type == EventType.TOOL_PROPOSED]
+    finished = [ev.data["tool_call_id"] for ev in events if ev.type == EventType.TOOL_FINISHED]
+    assert len(proposed) == 2 and all(proposed)
+    assert proposed == finished
+
+
+def test_a_shell_commands_outcome_rides_on_the_finished_event_not_the_preview(tmp_path):
+    long_command = "python -c '" + "x = 1; " * 80 + "'"  # pushes exit_code past the 300-char preview
+    engine, _rows, _approvals = _engine(
+        tmp_path,
+        [
+            _tool_turn(("run_shell", {"command": long_command})),
+            _tool_turn(("run_shell", {"command": "sleep 999"})),
+            _tool_turn(("run_shell", {"command": "npm run dev"})),
+            AssistantTurn(text="done", finish_reason="stop"),
+        ],
+    )
+    engine.reviewer = _FakeReviewer({"run_shell": "allow"})
+    _shell_returning(
+        engine,
+        {
+            long_command: {"command": long_command, "cwd": "/w", "exit_code": 1, "output": "", "timed_out": False},
+            "sleep 999": {"command": "sleep 999", "cwd": "/w", "exit_code": None, "output": "", "timed_out": True},
+            "npm run dev": {"task_id": "bg-1", "command": "npm run dev", "status": "running"},
+        },
+    )
+    events = _run(engine, "run things")
+    finished = [ev.data for ev in events if ev.type == EventType.TOOL_FINISHED]
+    assert '"exit_code"' not in finished[0]["result_preview"]  # the preview alone would say nothing
+    assert finished[0]["exit_code"] == 1 and "timed_out" not in finished[0]
+    assert finished[1]["exit_code"] is None and finished[1]["timed_out"] is True
+    assert finished[2]["background"] is True and "exit_code" not in finished[2]
+    # The same facts are persisted with the result, so a reload shows the same thing.
+    sidecars = [m["_display"] for m in engine.messages if m.get("role") == "tool"]
+    assert sidecars[0]["exit_code"] == 1
+    assert sidecars[1]["timed_out"] is True
+    assert sidecars[2]["background"] is True
+    # The summary: three changes attempted, two failed, one started in the background.
+    summary = _summaries(events)[0].data
+    assert (summary["count"], summary["failed"], summary["reads"]) == (1, 2, 0)
+    assert summary["actions"][0]["exit_code"] == 1
+    assert summary["actions"][1]["timed_out"] is True
+    assert summary["actions"][2]["background"] is True
+
+
+def test_a_failed_call_keeps_its_status_on_the_persisted_message(tmp_path):
+    engine, _rows, _approvals = _engine(
+        tmp_path,
+        [_tool_turn(("run_shell", {"command": "pytest -q"})), AssistantTurn(text="done", finish_reason="stop")],
+    )
+    engine.reviewer = _FakeReviewer({"run_shell": "allow"})
+
+    def run_shell(command: str) -> str:
+        """Run a command.
+
+        Args:
+            command: the command line
+        """
+        raise RuntimeError("exit 1")
+
+    engine.registry.register(run_shell, metadata=engine.registry.get("run_shell").metadata)
+    events = _run(engine, "run the tests")
+    tool_msg = next(m for m in engine.messages if m.get("role") == "tool")
+    assert tool_msg["_display"]["status"] == "error"
+    assert tool_msg["_display"]["approval_origin"] == "reviewer"
+    summary = _summaries(events)[0].data
+    assert (summary["count"], summary["failed"]) == (0, 1)
+
+
+def test_effect_follows_the_risk_class_and_the_read_only_tier(tmp_path):
+    from coworker.providers import ToolCall
+
+    engine, _rows, _approvals = _engine(tmp_path, [])
+    meta = engine.registry.get("run_shell").metadata
+    shell = ToolCall(id="c1", name="run_shell", arguments={"command": "cat x"})
+    assert engine._effect(shell, meta, "") == "change"  # a command is a change unless classified
+    assert engine._effect(shell, meta, "readonly_command") == "read"  # OPE-234's tier
+    write = ToolCall(id="c2", name="write_file", arguments={"path": "a.txt", "content": ""})
+    assert engine._effect(write, engine.registry.get("write_file").metadata, "inert_write") == "change"
+    fetch = ToolCall(id="c3", name="web_fetch", arguments={"url": "https://example.com"})
+    assert engine._effect(fetch, None, "") == "read"  # a web read is a read
+    mcp = ToolCall(id="c4", name="mcp__jira__create_issue", arguments={})
+    assert engine._effect(mcp, None, "") == "change"  # third-party tools that gate are writes or sends

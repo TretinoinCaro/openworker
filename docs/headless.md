@@ -174,8 +174,13 @@ record states it.
 
 A turn in which auto-approve let actions run with no approval card (a safe-change tier or a
 reviewer "allow") ends with a `turn_summary` event in `events.jsonl`, just before the event
-that ends the turn. It lists each action's tool call id, tool, origin and status; the audit
-log can be filtered by the same call id (`/v1/audit?call_id=…`).
+that ends the turn. Its `count` is the number of changes that ran and worked; `failed` counts
+the attempts that errored, exited non-zero or timed out, and `reads` the read-only actions
+(a read-only command tier, a web read). `actions` lists each one with its tool call id, tool,
+origin, effect (`change` or `read`), status, the tier that let it through when one did, and
+for a shell command its `exit_code`, `timed_out` or `background` flag. The audit log can be
+filtered by the same call id (`/v1/audit?call_id=…`). `tool_proposed` and `tool_finished`
+events carry the same `tool_call_id`.
 
 The trajectory and the exit code are the stable contract.
 

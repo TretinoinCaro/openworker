@@ -4,11 +4,16 @@ import type { Item } from "../types";
 import { humanizeTool } from "../humanize";
 import { Icon } from "./Icon";
 
-// OPE-238: "N changes made without asking". After a turn in which auto-approve let actions
-// run with no approval card (a gate tier, OPE-233, or a reviewer "allow"), the user who was
-// away sees every one of them here, with diffs, without opening the audit log. Collapsed at
-// rest; one click expands. Built from the turn's tool items, whose approval origin is
-// persisted on the tool message, so a reloaded session shows the same block.
+// OPE-238: "N changes auto-approved". After a turn in which auto-approve let actions run
+// with no approval card (a gate tier, OPE-233, or a reviewer "allow"), the user who was
+// away sees every change here, with diffs, without opening the audit log. Collapsed at
+// rest; one click expands. Built from the turn's tool items, whose approval origin,
+// effect and outcome are persisted on the tool message, so a reloaded session shows the
+// same block.
+//
+// The count means "things that changed state and that nobody approved": a read-only
+// action (a command the read-only tier classified, a web read) is listed apart and never
+// counted; an attempt that failed is counted as failed, not as a change.
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 
@@ -18,6 +23,8 @@ const FILE_TOOLS = new Set(["write_file", "replace_in_file", "apply_patch", "app
 const COMMAND_TOOLS = new Set(["run_shell"]);
 // A whole-file write can be long: show its head, and say how much is left.
 const MAX_DIFF_LINES = 200;
+// A long unattended turn can leave dozens of rows: show the first ones, offer the rest.
+export const MAX_ROWS = 25;
 
 export function unaskedTools(items: Item[]): ToolItem[] {
   return items.filter(
@@ -27,11 +34,54 @@ export function unaskedTools(items: Item[]): ToolItem[] {
 }
 
 // A shell result is `{"command", "cwd", "exit_code", "output", …}`; the preview may be cut
-// short, so read the field rather than parse the whole thing.
+// short, so read the field rather than parse the whole thing. The engine now puts the exit
+// code on the item itself (`exitCode`); this is the fallback for older transcripts.
 export function exitCodeOf(preview: string | undefined): number | null {
   if (!preview) return null;
   const m = /"exit_code"\s*:\s*(-?\d+)/.exec(preview);
   return m ? Number(m[1]) : null;
+}
+
+// The error text of a failed call's result (`{"error": …}` or `{"reason": …}`), for the chip.
+export function errorOf(preview: string | undefined): string {
+  if (!preview) return "";
+  try {
+    const v = JSON.parse(preview);
+    if (v && typeof v === "object") {
+      const text = v.reason || v.error;
+      if (typeof text === "string") return text;
+    }
+  } catch {
+    const m = /"(?:reason|error)"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(preview);
+    if (m) return m[1];
+  }
+  return "";
+}
+
+export function exitCodeFor(tool: ToolItem): number | null {
+  if ("exitCode" in tool) return typeof tool.exitCode === "number" ? tool.exitCode : null;
+  return exitCodeOf(tool.preview);
+}
+
+export function isRead(tool: ToolItem): boolean {
+  return tool.effect === "read";
+}
+
+// Changed nothing: the call errored, timed out, or the command exited non-zero.
+export function failed(tool: ToolItem): boolean {
+  if (tool.status !== "ok") return true;
+  if (tool.timedOut) return true;
+  const exit = exitCodeFor(tool);
+  return exit !== null && exit !== 0;
+}
+
+export type Summary = { changes: ToolItem[]; reads: ToolItem[]; count: number; failed: number };
+
+export function summarize(tools: ToolItem[]): Summary {
+  const changes = tools.filter((t) => !isRead(t));
+  const reads = tools.filter(isRead);
+  const failedCount = changes.filter(failed).length;
+  return { changes, reads, count: changes.length - failedCount, failed: failedCount };
 }
 
 type DiffLine = { kind: "add" | "del" | "ctx" | "meta"; text: string };
@@ -134,18 +184,51 @@ export function patchSummary(name: string, args: any): PatchChange[] {
   return changes.filter((c) => c.path);
 }
 
-function UnaskedItem({ tool, onOpenAudit }: { tool: ToolItem; onOpenAudit?: (callId: string) => void }) {
+// Who let it through: the tier by name, else the reviewer.
+function OriginChip({ tool }: { tool: ToolItem }) {
   const { t } = useTranslation();
+  const tier = tool.approvalOrigin === "gate_tier";
+  return (
+    <span
+      className="text-label text-faint shrink-0"
+      data-testid="unasked-origin"
+      title={tier ? t("transcript.approval.gate_tier_title") : tool.approvalNote || t("transcript.approval.reviewer_allowed_title")}
+    >
+      {tier ? t("transcript.unasked.by_tier") : t("transcript.unasked.by_reviewer")}
+    </span>
+  );
+}
+
+function AuditLink({ tool, onOpenAudit }: { tool: ToolItem; onOpenAudit?: (callId: string) => void }) {
+  const { t } = useTranslation();
+  if (!onOpenAudit || !tool.callId) return null;
+  return (
+    <button
+      className="ml-auto shrink-0 text-label text-faint hover:text-muted cursor-pointer"
+      data-testid="unasked-audit"
+      onClick={() => onOpenAudit(tool.callId!)}
+    >
+      {t("transcript.unasked.audit")}
+    </button>
+  );
+}
+
+// A row: one tool call, or every edit of one file in this turn (stacked diffs).
+function UnaskedRow({ tools, onOpenAudit }: { tools: ToolItem[]; onOpenAudit?: (callId: string) => void }) {
+  const { t } = useTranslation();
+  const tool = tools[0];
   const line = humanizeTool(tool.name, tool.args);
   const path = typeof tool.args?.path === "string" ? tool.args.path : "";
   const isCommand = COMMAND_TOOLS.has(tool.name);
-  const exit = isCommand ? exitCodeOf(tool.preview) : null;
-  const failed = tool.status !== "ok";
+  const exit = isCommand && !tool.background ? exitCodeFor(tool) : null;
+  const anyFailed = tools.some(failed);
+  const errorText = tool.status !== "ok" ? errorOf(tool.preview) : "";
   const patched = patchSummary(tool.name, tool.args);
+  const dot = tool.background ? "text-faint" : anyFailed ? "text-danger" : "text-ok";
   return (
     <div data-testid="unasked-item" className="py-0.5">
       <div className="flex items-baseline gap-2 px-2">
-        <span className={"w-3.5 text-center text-label shrink-0 " + (failed || (exit !== null && exit !== 0) ? "text-danger" : "text-ok")}>●</span>
+        <span className={"w-3.5 text-center text-label shrink-0 " + dot}>●</span>
         <span className="min-w-0 text-ui leading-relaxed" data-testid="unasked-item-line">
           {isCommand ? (
             <code className="font-mono text-meta text-ink break-all">{String(tool.args?.command ?? "")}</code>
@@ -165,8 +248,13 @@ function UnaskedItem({ tool, onOpenAudit }: { tool: ToolItem; onOpenAudit?: (cal
             ))
           ) : path ? (
             <>
-              <span className="text-muted">{line.pre}</span>
+              <span className="text-muted">{tools.length > 1 ? t("transcript.unasked.edited") + " " : line.pre}</span>
               <span className="font-mono text-meta text-ink break-all">{path}</span>
+              {tools.length > 1 && (
+                <span className="text-faint" data-testid="unasked-edit-count">
+                  {" · " + t("transcript.unasked.edits", { count: tools.length })}
+                </span>
+              )}
             </>
           ) : (
             <>
@@ -176,47 +264,86 @@ function UnaskedItem({ tool, onOpenAudit }: { tool: ToolItem; onOpenAudit?: (cal
             </>
           )}
         </span>
-        {exit !== null ? (
+        {tool.background ? (
+          <span className="text-label text-faint shrink-0" data-testid="unasked-background">
+            {t("transcript.unasked.background")}
+          </span>
+        ) : tool.timedOut ? (
+          <span className="text-label text-danger shrink-0" data-testid="unasked-exit">
+            {t("transcript.unasked.timed_out")}
+          </span>
+        ) : exit !== null ? (
           <span className={"text-label shrink-0 " + (exit === 0 ? "text-ok" : "text-danger")} data-testid="unasked-exit">
             {t("transcript.unasked.exit", { code: exit })}
           </span>
         ) : (
-          failed && <span className="text-label text-danger shrink-0">{tool.status}</span>
+          tool.status !== "ok" && (
+            <span className="text-label text-danger shrink-0 truncate max-w-[40%]" data-testid="unasked-failed" title={errorText}>
+              {t("transcript.unasked.failed")}
+              {errorText ? " · " + errorText : ""}
+            </span>
+          )
         )}
-        <span
-          className="text-label text-faint shrink-0"
-          title={
-            tool.approvalOrigin === "gate_tier"
-              ? t("transcript.approval.gate_tier_title")
-              : tool.approvalNote || t("transcript.approval.reviewer_allowed_title")
-          }
-        >
-          {tool.approvalOrigin === "gate_tier" ? t("transcript.approval.gate_tier") : t("transcript.approval.auto_approved")}
-        </span>
-        {onOpenAudit && tool.callId && (
-          <button
-            className="ml-auto shrink-0 text-label text-faint hover:text-muted cursor-pointer"
-            data-testid="unasked-audit"
-            onClick={() => onOpenAudit(tool.callId!)}
-          >
-            {t("transcript.unasked.audit")}
-          </button>
-        )}
+        <OriginChip tool={tool} />
+        {tools.length === 1 && <AuditLink tool={tool} onOpenAudit={onOpenAudit} />}
       </div>
-      <Diff tool={tool} />
+      {tools.map((edit, i) => (
+        <div key={edit.id || i}>
+          {tools.length > 1 && (
+            <div className="flex items-baseline gap-2 px-2 ml-5 text-label text-faint">
+              <span>{i + 1}.</span>
+              {failed(edit) && <span className="text-danger">{t("transcript.unasked.failed")}</span>}
+              <AuditLink tool={edit} onOpenAudit={onOpenAudit} />
+            </div>
+          )}
+          <Diff tool={edit} />
+        </div>
+      ))}
     </div>
   );
+}
+
+// Rows in display order: files (edits of one file together), commands, other actions.
+export function rowsOf(changes: ToolItem[]): Array<{ group: "files" | "commands" | "other"; tools: ToolItem[] }> {
+  const rows: Array<{ group: "files" | "commands" | "other"; tools: ToolItem[] }> = [];
+  const byPath = new Map<string, ToolItem[]>();
+  for (const tool of changes.filter((x) => FILE_TOOLS.has(x.name))) {
+    const path = typeof tool.args?.path === "string" ? tool.args.path : "";
+    if (!path) {
+      rows.push({ group: "files", tools: [tool] });
+      continue;
+    }
+    const bucket = byPath.get(path);
+    if (bucket) bucket.push(tool);
+    else {
+      const fresh = [tool];
+      byPath.set(path, fresh);
+      rows.push({ group: "files", tools: fresh });
+    }
+  }
+  for (const tool of changes.filter((x) => COMMAND_TOOLS.has(x.name))) rows.push({ group: "commands", tools: [tool] });
+  for (const tool of changes.filter((x) => !FILE_TOOLS.has(x.name) && !COMMAND_TOOLS.has(x.name)))
+    rows.push({ group: "other", tools: [tool] });
+  return rows;
 }
 
 export function UnaskedSummary({ tools, onOpenAudit }: { tools: ToolItem[]; onOpenAudit?: (callId: string) => void }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  if (!tools.length) return null;
-  const groups: Array<{ key: "files" | "commands" | "other"; items: ToolItem[] }> = [
-    { key: "files" as const, items: tools.filter((x) => FILE_TOOLS.has(x.name)) },
-    { key: "commands" as const, items: tools.filter((x) => COMMAND_TOOLS.has(x.name)) },
-    { key: "other" as const, items: tools.filter((x) => !FILE_TOOLS.has(x.name) && !COMMAND_TOOLS.has(x.name)) },
-  ].filter((g) => g.items.length);
+  const [showAll, setShowAll] = useState(false);
+  const [showReads, setShowReads] = useState(false);
+  const summary = summarize(tools);
+  // Only reads, and nothing attempted: nothing changed, so nothing to say.
+  if (!summary.changes.length) return null;
+  const rows = rowsOf(summary.changes);
+  const shown = showAll ? rows : rows.slice(0, MAX_ROWS);
+  const groups = (["files", "commands", "other"] as const)
+    .map((key) => ({ key, rows: shown.filter((r) => r.group === key) }))
+    .filter((g) => g.rows.length);
+  const head =
+    summary.count > 0
+      ? t("transcript.unasked.summary", { count: summary.count })
+      : t("transcript.unasked.summary_none");
   return (
     <details className="stepgroup unasked-summary" open={open} data-testid="unasked-summary">
       <summary
@@ -228,18 +355,62 @@ export function UnaskedSummary({ tools, onOpenAudit }: { tools: ToolItem[]; onOp
         }}
       >
         <Icon name="chevronDown" size={12} />
-        <span>{t("transcript.unasked.summary", { count: tools.length })}</span>
+        <span>{head}</span>
+        {summary.failed > 0 && (
+          <span className="text-faint" data-testid="unasked-failed-count">
+            {" · " + t("transcript.unasked.failed_count", { count: summary.failed })}
+          </span>
+        )}
+        {summary.reads.length > 0 && (
+          <span className="text-faint" data-testid="unasked-read-count">
+            {" · " + t("transcript.unasked.read_count", { count: summary.reads.length })}
+          </span>
+        )}
       </summary>
       {open && (
         <div className="ml-1.5 mt-1 pl-2 border-l-2 border-line flex flex-col gap-1.5" data-testid="unasked-summary-body">
           {groups.map((g) => (
             <div key={g.key} data-testid={`unasked-group-${g.key}`}>
               <div className="px-2 text-label text-faint uppercase tracking-wide">{t(`transcript.unasked.group_${g.key}`)}</div>
-              {g.items.map((tool, i) => (
-                <UnaskedItem tool={tool} onOpenAudit={onOpenAudit} key={tool.id || i} />
+              {g.rows.map((row, i) => (
+                <UnaskedRow tools={row.tools} onOpenAudit={onOpenAudit} key={row.tools[0].id || i} />
               ))}
             </div>
           ))}
+          {rows.length > shown.length && (
+            <button
+              className="self-start px-2 text-label text-faint hover:text-muted cursor-pointer"
+              data-testid="unasked-show-all"
+              onClick={() => setShowAll(true)}
+            >
+              {t("transcript.unasked.show_all", { count: rows.length })}
+            </button>
+          )}
+          {summary.reads.length > 0 && (
+            <div data-testid="unasked-reads">
+              <button
+                className="px-2 text-label text-faint hover:text-muted cursor-pointer"
+                data-testid="unasked-reads-toggle"
+                onClick={() => setShowReads((v) => !v)}
+              >
+                {t("transcript.unasked.read_tail", { count: summary.reads.length })}
+              </button>
+              {showReads &&
+                summary.reads.map((tool, i) => (
+                  <div className="flex items-baseline gap-2 px-2 ml-3 text-meta" key={tool.id || i} data-testid="unasked-read-item">
+                    {COMMAND_TOOLS.has(tool.name) ? (
+                      <code className="font-mono text-meta text-muted break-all">{String(tool.args?.command ?? "")}</code>
+                    ) : (
+                      <span className="text-muted">
+                        {humanizeTool(tool.name, tool.args).pre}
+                        {humanizeTool(tool.name, tool.args).obj}
+                      </span>
+                    )}
+                    <AuditLink tool={tool} onOpenAudit={onOpenAudit} />
+                  </div>
+                ))}
+            </div>
+          )}
         </div>
       )}
     </details>

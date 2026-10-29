@@ -986,7 +986,7 @@ export function App() {
             setTodo(normalizeTodos(d.arguments.todos ?? d.arguments.items));
           setItems((p) => [
             ...p,
-            { kind: "tool", id: newId(), name: d.name, args: d.arguments, status: "…" },
+            { kind: "tool", id: newId(), name: d.name, args: d.arguments, status: "…", ...(d.tool_call_id ? { callId: String(d.tool_call_id) } : {}) },
           ]);
           break;
         case "permission_required":
@@ -1053,19 +1053,20 @@ export function App() {
             setItems(p => [...p, { kind: "teamcreated", teamId: c.team_id, workers: c.workers || [], ts: Date.now() / 1000 }]);
           }
           setItems((p) =>
-            updateLastTool(
-              p,
-              d.name,
-              d.status,
-              d.result_preview || d.reason,
-              d.display?.hidden_by_filters,
-              d.standing_rule,
-              d.reviewer_reason,
-              d.allow_anyway,
-              d.approval_origin,
-              d.approval_note,
-              d.tool_call_id,
-            ),
+            updateLastTool(p, d.name, d.status, d.result_preview || d.reason, {
+              hidden: d.display?.hidden_by_filters,
+              standingRule: d.standing_rule,
+              reviewerReason: d.reviewer_reason,
+              allowAnyway: d.allow_anyway,
+              approvalOrigin: d.approval_origin,
+              approvalNote: d.approval_note,
+              callId: d.tool_call_id,
+              effect: d.approval_effect,
+              tier: d.approval_tier,
+              ...("exit_code" in d ? { exitCode: d.exit_code } : {}),
+              timedOut: d.timed_out,
+              background: d.background,
+            }),
           );
           // §8.4 breaker: the reviewer paused itself for the rest of the turn — say so
           // where the user is looking (persisted server-side for reloads) and on the
@@ -2722,37 +2723,61 @@ function WaitingForAgent({ label }: { label?: string }) {
   );
 }
 
-function updateLastTool(
+// Pairs a finished event with its pending tool item. By call id when the engine gave one
+// (OPE-238: two same-named calls in one batch finish in call order, and matching the LAST
+// pending item by name handed each one the other's result, exit code and audit link);
+// otherwise the last pending item with that name, as before.
+export function updateLastTool(
   items: Item[],
   name: string,
   status: string,
-  preview?: string,
-  hidden?: number,
-  standingRule?: string,
-  reviewerReason?: string,
-  allowAnyway?: boolean,
-  approvalOrigin?: string,
-  approvalNote?: string,
-  callId?: string,
+  preview: string | undefined,
+  fields: {
+    hidden?: number;
+    standingRule?: string;
+    reviewerReason?: string;
+    allowAnyway?: boolean;
+    approvalOrigin?: string;
+    approvalNote?: string;
+    callId?: string;
+    effect?: string;
+    tier?: string;
+    exitCode?: number | null;
+    timedOut?: boolean;
+    background?: boolean;
+  } = {},
 ): Item[] {
   const copy = [...items];
-  for (let i = copy.length - 1; i >= 0; i--) {
-    const it = copy[i];
-    if (it.kind === "tool" && it.name === name && it.status === "…") {
-      copy[i] = {
-        ...it,
-        status,
-        preview,
-        ...(hidden ? { hidden } : {}),
-        ...(standingRule ? { standingRule } : {}),
-        ...(reviewerReason ? { reviewerReason } : {}),
-        ...(allowAnyway ? { allowAnyway } : {}),
-        ...(approvalOrigin ? { approvalOrigin } : {}),
-        ...(approvalNote ? { approvalNote } : {}),
-        ...(callId ? { callId } : {}),
-      };
-      break;
+  const { hidden, standingRule, reviewerReason, allowAnyway, approvalOrigin, approvalNote, callId, effect, tier, timedOut, background } = fields;
+  let at = -1;
+  if (callId) at = copy.findIndex((it) => it.kind === "tool" && it.callId === callId && it.status === "…");
+  if (at < 0)
+    for (let i = copy.length - 1; i >= 0; i--) {
+      const it = copy[i];
+      if (it.kind === "tool" && it.name === name && it.status === "…") {
+        at = i;
+        break;
+      }
     }
+  if (at >= 0) {
+    const it = copy[at] as Extract<Item, { kind: "tool" }>;
+    copy[at] = {
+      ...it,
+      status,
+      preview,
+      ...(hidden ? { hidden } : {}),
+      ...(standingRule ? { standingRule } : {}),
+      ...(reviewerReason ? { reviewerReason } : {}),
+      ...(allowAnyway ? { allowAnyway } : {}),
+      ...(approvalOrigin ? { approvalOrigin } : {}),
+      ...(approvalNote ? { approvalNote } : {}),
+      ...(callId ? { callId } : {}),
+      ...(effect ? { effect } : {}),
+      ...(tier ? { tier } : {}),
+      ...("exitCode" in fields ? { exitCode: fields.exitCode } : {}),
+      ...(timedOut ? { timedOut } : {}),
+      ...(background ? { background } : {}),
+    };
   }
   return copy;
 }

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { Transcript } from "./Transcript";
-import { exitCodeOf, patchSummary } from "./UnaskedSummary";
+import { MAX_ROWS, errorOf, exitCodeOf, patchSummary, summarize } from "./UnaskedSummary";
 import type { Item } from "../types";
 
 afterEach(cleanup);
@@ -52,10 +52,10 @@ function openSummary() {
   return screen.getByTestId("unasked-summary-body");
 }
 
-describe("changes made without asking (OPE-238)", () => {
+describe("changes auto-approved (OPE-238)", () => {
   it("is collapsed at rest and counts only the unasked actions", () => {
     render(<Transcript items={TURN} onApprove={vi.fn()} />);
-    expect(screen.getByTestId("unasked-summary-head").textContent).toContain("3 changes made without asking");
+    expect(screen.getByTestId("unasked-summary-head").textContent).toContain("3 changes auto-approved");
     expect(screen.queryByTestId("unasked-summary-body")).toBeNull();
     expect(screen.queryByText("Three tasks done.")).toBeNull();
   });
@@ -95,8 +95,8 @@ describe("changes made without asking (OPE-238)", () => {
     expect(within(commands).getByTestId("unasked-exit").textContent).toBe("exit 0");
 
     // Who let each one through.
-    expect(files.textContent).toContain("safe change, no card");
-    expect(body.textContent).toContain("auto-approved");
+    expect(files.textContent).toContain("safe change");
+    expect(body.textContent).toContain("reviewer");
 
     // The user-approved deploy is not listed.
     expect(body.textContent).not.toContain("make deploy");
@@ -153,7 +153,7 @@ describe("changes made without asking (OPE-238)", () => {
       { kind: "assistant", text: "Fixed." },
     ];
     const { container } = render(<Transcript items={items} onApprove={vi.fn()} />);
-    expect(screen.getByTestId("unasked-summary-head").textContent).toContain("1 change made without asking");
+    expect(screen.getByTestId("unasked-summary-head").textContent).toContain("1 change auto-approved");
     openSummary();
     expect(Array.from(container.querySelectorAll(".diff-del")).map((n) => n.textContent)).toContain("-old line");
     expect(Array.from(container.querySelectorAll(".diff-add")).map((n) => n.textContent)).toContain("+new line");
@@ -216,7 +216,7 @@ describe("changes made without asking (OPE-238)", () => {
     const heads = screen.getAllByTestId("unasked-summary-head").map((h) => h.textContent);
     expect(heads.length).toBe(2);
     expect(heads[0]).toContain("3 changes");
-    expect(heads[1]).toContain("1 change made");
+    expect(heads[1]).toContain("1 change auto-approved");
   });
 });
 
@@ -290,5 +290,214 @@ describe("exitCodeOf", () => {
     expect(exitCodeOf("ran: ls")).toBeNull();
     expect(exitCodeOf(undefined)).toBeNull();
     expect(exitCodeOf('{"exit_code": null}')).toBeNull();
+  });
+});
+
+
+// The count means "things that changed state and that nobody approved". A failed attempt
+// changed nothing; a read-only action is listed apart; a background start is neither.
+describe("the count is honest", () => {
+  const turn = (...tools: Item[]): Item[] => [{ kind: "user", text: "work" }, ...tools, { kind: "assistant", text: "Done." }];
+  const shell = (id: string, command: string, extra: Partial<Extract<Item, { kind: "tool" }>> = {}): Item => ({
+    kind: "tool",
+    id,
+    callId: "c_" + id,
+    name: "run_shell",
+    args: { command },
+    status: "ok",
+    approvalOrigin: "reviewer",
+    ...extra,
+  });
+
+  it("a command that exited non-zero is a failure, not a change, even when the preview hides its exit code", () => {
+    const long = "python -c '" + "x = 1; ".repeat(80) + "'";
+    render(
+      <Transcript
+        items={turn(shell("a", "pytest -q", { exitCode: 0 }), shell("b", long, { exitCode: 1, preview: '{"command": "' + long + '"...' }))}
+        onApprove={vi.fn()}
+      />,
+    );
+    const head = screen.getByTestId("unasked-summary-head");
+    expect(head.textContent).toContain("1 change auto-approved");
+    expect(screen.getByTestId("unasked-failed-count").textContent).toContain("1 failed");
+    openSummary();
+    const exits = screen.getAllByTestId("unasked-exit").map((e) => e.textContent);
+    expect(exits).toEqual(["exit 0", "exit 1"]);
+  });
+
+  it("a timed-out command is a failure and says so", () => {
+    render(<Transcript items={turn(shell("a", "sleep 999", { exitCode: null, timedOut: true }))} onApprove={vi.fn()} />);
+    expect(screen.getByTestId("unasked-summary-head").textContent).toContain("No changes auto-approved");
+    expect(screen.getByTestId("unasked-failed-count").textContent).toContain("1 failed");
+    openSummary();
+    const exit = screen.getByTestId("unasked-exit");
+    expect(exit.textContent).toBe("timed out");
+    expect(exit.className).toContain("text-danger");
+  });
+
+  it("a command started in the background is neither done nor failed", () => {
+    render(<Transcript items={turn(shell("a", "npm run dev", { background: true }), shell("b", "pytest -q", { exitCode: 0 }))} onApprove={vi.fn()} />);
+    expect(screen.getByTestId("unasked-summary-head").textContent).toContain("2 changes auto-approved");
+    expect(screen.queryByTestId("unasked-failed-count")).toBeNull();
+    openSummary();
+    expect(screen.getByTestId("unasked-background").textContent).toBe("started in the background");
+    expect(screen.queryAllByTestId("unasked-exit").length).toBe(1);
+  });
+
+  it("a write that failed is a failure with its error, not a green change", () => {
+    const items = turn({
+      kind: "tool",
+      id: "w",
+      callId: "c_w",
+      name: "write_file",
+      args: { path: "/tmp/gen_poc.py", content: "x" },
+      status: "error",
+      preview: '{"error": "Path escapes allowed roots: /tmp/gen_poc.py", "error_type": "ValueError"}',
+      approvalOrigin: "reviewer",
+    });
+    render(<Transcript items={items} onApprove={vi.fn()} />);
+    expect(screen.getByTestId("unasked-summary-head").textContent).toContain("No changes auto-approved · 1 failed");
+    const body = openSummary();
+    expect(within(body).getByTestId("unasked-failed").textContent).toContain("failed · Path escapes allowed roots");
+  });
+
+  it("read-only actions are listed apart and never counted", () => {
+    const items = turn(
+      shell("r1", "cat notes.md", { approvalOrigin: "gate_tier", tier: "readonly_command", effect: "read" }),
+      shell("r2", "git status", { approvalOrigin: "gate_tier", tier: "readonly_command", effect: "read" }),
+      shell("w", "pytest -q", { exitCode: 0, effect: "change" }),
+    );
+    render(<Transcript items={items} onApprove={vi.fn()} />);
+    const head = screen.getByTestId("unasked-summary-head");
+    expect(head.textContent).toContain("1 change auto-approved");
+    expect(screen.getByTestId("unasked-read-count").textContent).toContain("2 read-only");
+    const body = openSummary();
+    expect(within(body).getAllByTestId("unasked-item").length).toBe(1);
+    expect(body.textContent).not.toContain("cat notes.md");
+    fireEvent.click(within(body).getByTestId("unasked-reads-toggle"));
+    const reads = within(body).getAllByTestId("unasked-read-item").map((n) => n.textContent);
+    expect(reads[0]).toContain("cat notes.md");
+    expect(reads[1]).toContain("git status");
+  });
+
+  it("a turn that only read things shows nothing at all", () => {
+    render(
+      <Transcript
+        items={turn(shell("r1", "cat notes.md", { approvalOrigin: "gate_tier", tier: "readonly_command", effect: "read" }))}
+        onApprove={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId("unasked-summary")).toBeNull();
+  });
+
+  it("summarize() is the same rule the engine applies", () => {
+    const s = summarize([
+      shell("a", "x", { exitCode: 0 }),
+      shell("b", "y", { exitCode: 2 }),
+      shell("c", "z", { effect: "read" }),
+      { ...shell("d", "w"), status: "error" },
+    ] as any);
+    expect([s.count, s.failed, s.reads.length, s.changes.length]).toEqual([1, 2, 1, 3]);
+  });
+});
+
+describe("rows stay readable", () => {
+  it("several edits of one file collapse into one row with stacked diffs and a link per edit", () => {
+    const edit = (id: string, old: string, neu: string): Item => ({
+      kind: "tool",
+      id,
+      callId: "c_" + id,
+      name: "replace_in_file",
+      args: { path: "src/app.py", old, new: neu },
+      status: "ok",
+      approvalOrigin: "reviewer",
+    });
+    const items: Item[] = [
+      { kind: "user", text: "turn debug off" },
+      edit("e1", "DEBUG = True", "DEBUG = False"),
+      { kind: "tool", id: "o", callId: "c_o", name: "write_file", args: { path: "docs/x.md", content: "hi" }, status: "ok", approvalOrigin: "gate_tier" },
+      edit("e2", 'LOG = "debug"', 'LOG = "info"'),
+      { kind: "assistant", text: "Done." },
+    ];
+    const onOpenAudit = vi.fn();
+    render(<Transcript items={items} onApprove={vi.fn()} onOpenAudit={onOpenAudit} />);
+    // Three calls, three changes: the count is per change, the rows are per file.
+    expect(screen.getByTestId("unasked-summary-head").textContent).toContain("3 changes auto-approved");
+    const files = within(openSummary()).getByTestId("unasked-group-files");
+    const rows = within(files).getAllByTestId("unasked-item");
+    expect(rows.length).toBe(2);
+    expect(within(rows[0]).getByTestId("unasked-item-line").textContent).toBe("Edited src/app.py · 2 edits");
+    expect(within(rows[0]).getAllByTestId("unasked-diff").length).toBe(2);
+    const links = within(rows[0]).getAllByTestId("unasked-audit");
+    expect(links.length).toBe(2);
+    fireEvent.click(links[1]);
+    expect(onOpenAudit).toHaveBeenCalledWith("c_e2");
+  });
+
+  it("a long list shows the first rows and offers the rest", () => {
+    const many: Item[] = Array.from({ length: MAX_ROWS + 5 }, (_, i) => ({
+      kind: "tool" as const,
+      id: "s" + i,
+      callId: "c" + i,
+      name: "run_shell",
+      args: { command: "cmd " + i },
+      status: "ok",
+      exitCode: 0,
+      approvalOrigin: "reviewer",
+    }));
+    render(<Transcript items={[{ kind: "user", text: "go" }, ...many, { kind: "assistant", text: "Done." }]} onApprove={vi.fn()} />);
+    const body = openSummary();
+    expect(within(body).getAllByTestId("unasked-item").length).toBe(MAX_ROWS);
+    const more = within(body).getByTestId("unasked-show-all");
+    expect(more.textContent).toContain(String(MAX_ROWS + 5));
+    fireEvent.click(more);
+    expect(within(body).getAllByTestId("unasked-item").length).toBe(MAX_ROWS + 5);
+  });
+});
+
+// A notice inside a turn (compaction, continuation, a saved memory) breaks the step group,
+// not the turn: one summary per turn, after its answer, and never while it is running.
+describe("one summary per turn", () => {
+  const first: Item = { kind: "tool", id: "t1", callId: "c1", name: "run_shell", args: { command: "pytest -q" }, status: "ok", exitCode: 0, approvalOrigin: "reviewer" };
+  const notice: Item = { kind: "notice", tone: "info", text: "Context compacted" };
+  const second: Item = { kind: "tool", id: "t2", callId: "c2", name: "run_shell", args: { command: "ruff check" }, status: "ok", exitCode: 0, approvalOrigin: "reviewer" };
+
+  it("nothing shows while the turn is running, even after a mid-turn notice", () => {
+    render(<Transcript items={[{ kind: "user", text: "go" }, first, notice, { ...second, status: "…" }]} running onApprove={vi.fn()} />);
+    expect(screen.queryByTestId("unasked-summary")).toBeNull();
+  });
+
+  it("a finished turn with a mid-turn notice gets one summary, after the answer, counting both halves", () => {
+    render(<Transcript items={[{ kind: "user", text: "go" }, first, notice, second, { kind: "assistant", text: "Done." }]} onApprove={vi.fn()} />);
+    const heads = screen.getAllByTestId("unasked-summary-head");
+    expect(heads.length).toBe(1);
+    expect(heads[0].textContent).toContain("2 changes auto-approved");
+    const answer = screen.getByText("Done.");
+    expect(answer.compareDocumentPosition(screen.getByTestId("unasked-summary")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("the previous turn's summary sits before the next user message while the new turn runs", () => {
+    render(
+      <Transcript
+        items={[{ kind: "user", text: "go" }, first, { kind: "assistant", text: "Done." }, { kind: "user", text: "again" }, { ...second, status: "…" }]}
+        running
+        onApprove={vi.fn()}
+      />,
+    );
+    const heads = screen.getAllByTestId("unasked-summary-head");
+    expect(heads.length).toBe(1);
+    expect(heads[0].textContent).toContain("1 change auto-approved");
+    const next = screen.getByText("again");
+    expect(screen.getByTestId("unasked-summary").compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+describe("errorOf", () => {
+  it("reads the error text of a failed result, whole or cut short", () => {
+    expect(errorOf('{"error": "Path escapes allowed roots: /tmp/x", "error_type": "ValueError"}')).toBe("Path escapes allowed roots: /tmp/x");
+    expect(errorOf('{"error": "tool call not executed", "reason": "denied"}')).toBe("denied");
+    expect(errorOf('{"error": "boom", "error_type": "Runt')).toBe("boom");
+    expect(errorOf("plain text")).toBe("");
+    expect(errorOf(undefined)).toBe("");
   });
 });

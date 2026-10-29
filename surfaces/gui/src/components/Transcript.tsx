@@ -553,6 +553,14 @@ export function Transcript({ items, running, streamingText, onRetry, onOpenConne
     | { item: Item; i: number; sources?: MessageSource[]; steps?: Item[] }
   > = [];
   let run: TurnItem[] = [];
+  // OPE-238: what ran auto-approved in the turn so far. A notice inside a turn (compaction,
+  // continuation, a saved memory) breaks the step group but not the turn: the block is
+  // emitted once, after the answer, when the next user message arrives or the turn is over.
+  let pendingUnasked: ToolItem[] = [];
+  const emitUnasked = () => {
+    if (pendingUnasked.length) blocks.push({ unasked: pendingUnasked });
+    pendingUnasked = [];
+  };
   const flush = (live = false) => {
     if (!run.length) return;
     const turn = [...run];
@@ -567,11 +575,7 @@ export function Transcript({ items, running, streamingText, onRetry, onOpenConne
     if (turn.some((it) => it.kind !== "assistant")) blocks.push({ turn, live });
     else turn.forEach((t) => blocks.push({ item: t, i: -1 }));
     answers.forEach((a) => blocks.push({ item: a, i: -1 }));
-    // OPE-238: a finished turn ends with what ran without asking, after its answer.
-    if (!live) {
-      const unasked = unaskedTools(turn);
-      if (unasked.length) blocks.push({ unasked });
-    }
+    if (!live) pendingUnasked.push(...unaskedTools(turn));
   };
   foldTeamUpdates(items).forEach(({ item, sources, steps }) => {
     const i = items.indexOf(item);
@@ -587,10 +591,12 @@ export function Transcript({ items, running, streamingText, onRetry, onOpenConne
       return;
     } else {
       flush();
+      if (item.kind === "user" || item.kind === "connector") emitUnasked();
       blocks.push({ item, i, sources, steps });
     }
   });
   flush(!!running);
+  if (!running) emitUnasked();
 
   const lastTurnIndex = blocks.reduce((acc, b, i) => ("turn" in b ? i : acc), -1);
   return (
